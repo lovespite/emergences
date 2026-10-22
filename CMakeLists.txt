@@ -19,7 +19,7 @@ if(EMERGENCES_BUILD_APP)
         message(FATAL_ERROR
             "Vulkan development files were not found. Install the LunarG Vulkan SDK "
             "and set VULKAN_SDK to its root, then configure again. "
-            "The GPU driver alone is insufficient. To build only simulation interfaces, "
+            "The GPU driver alone is insufficient. To build only CPU simulation and rules, "
             "configure with -DEMERGENCES_BUILD_APP=OFF.")
     endif()
     find_program(EMERGENCES_GLSLC NAMES glslc
@@ -40,5 +40,5 @@ add_subdirectory(src/sim)
 if(EMERGENCES_BUILD_APP)
     include(cmake/Shaders.cmake)
     add_subdirectory(src/core)
-    add_subdirectory(src/scenarios/boids)
 endif()
+add_subdirectory(src/scenarios/boids)

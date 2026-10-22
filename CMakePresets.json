@@ -19,7 +19,7 @@
     },
     {
       "name": "vs2022-sim",
-      "displayName": "Simulation interfaces only (no Vulkan SDK required)",
+      "displayName": "CPU simulation and Boids (no Vulkan SDK required)",
       "inherits": "vs2022",
       "binaryDir": "${sourceDir}/build/sim-only",
       "cacheVariables": { "EMERGENCES_BUILD_APP": "OFF" }
@@ -28,9 +28,24 @@
   "buildPresets": [
     { "name": "debug", "configurePreset": "vs2022", "configuration": "Debug" },
     { "name": "release", "configurePreset": "vs2022", "configuration": "Release" },
-    { "name": "sim-debug", "configurePreset": "vs2022-sim", "configuration": "Debug" }
+    { "name": "sim-debug", "configurePreset": "vs2022-sim", "configuration": "Debug" },
+    { "name": "sim-release", "configurePreset": "vs2022-sim", "configuration": "Release" }
   ],
   "testPresets": [
+    {
+      "name": "sim-debug",
+      "configurePreset": "vs2022-sim",
+      "configuration": "Debug",
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error" }
+    },
+    {
+      "name": "sim-release",
+      "configurePreset": "vs2022-sim",
+      "configuration": "Release",
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error" }
+    },
     {
       "name": "debug",
       "configurePreset": "vs2022",

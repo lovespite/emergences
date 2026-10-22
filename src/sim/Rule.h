@@ -9,13 +9,20 @@
 namespace emergences::sim {
 
 // Borrowed data, valid only during Rule::steer. agent must not be null.
+// distanceSquared uses World::displacement (minimum-image distance for Wrap).
+// The CPU backend excludes self by array index, includes exact radius matches,
+// and passes only this rule's neighbors; radius zero means an empty span.
 struct Neighbor {
     const Agent* agent;
-    float distanceSquared;
+    // Keep the query's precision so a second radius filter cannot round an
+    // included boundary neighbor outside the rule's neighborhood.
+    double distanceSquared;
 };
 
 // CPU rule implementation. GPU rules will share parameters and carry a matching
 // GLSL implementation; arbitrary C++ callbacks are not executable on the GPU.
+// steer returns unweighted acceleration. The backend multiplies by weight once;
+// zero weight disables the rule. Weight/radius must be finite and nonnegative.
 class Rule {
 public:
     virtual ~Rule() = default;

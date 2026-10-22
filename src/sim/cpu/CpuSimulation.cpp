@@ -1,0 +1,244 @@
+#include "sim/cpu/CpuSimulation.h"
+
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <stdexcept>
+
+#include <glm/geometric.hpp>
+#include <glm/vec3.hpp>
+
+namespace emergences::sim::cpu {
+namespace {
+
+bool finite(const glm::vec3& value) {
+    return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
+}
+
+void validateCount(std::size_t count) {
+    if (count > std::numeric_limits<std::uint32_t>::max()) {
+        throw std::length_error("CPU agent count exceeds the 32-bit ID range");
+    }
+}
+
+void validateLimits(const MotionLimits& limits) {
+    if (!std::isfinite(limits.minimumSpeed) || !std::isfinite(limits.maximumSpeed) ||
+        !std::isfinite(limits.maximumAcceleration) || limits.minimumSpeed < 0.0F ||
+        limits.maximumSpeed < limits.minimumSpeed || limits.maximumAcceleration < 0.0F) {
+        throw std::invalid_argument("Motion limits must be finite, nonnegative and ordered");
+    }
+}
+
+// Integer mixing makes reset and newly appended agents independent of step count,
+// previous resizing and the standard library's random distribution implementation.
+std::uint32_t mix(std::uint32_t value) {
+    value ^= value >> 16U;
+    value *= 0x7FEB352DU;
+    value ^= value >> 15U;
+    value *= 0x846CA68BU;
+    return value ^ (value >> 16U);
+}
+
+float unit(std::uint32_t value) {
+    return static_cast<float>(mix(value) >> 8U) * (1.0F / 16777216.0F);
+}
+
+glm::dvec3 initialDirection(std::uint32_t value) {
+    glm::dvec3 direction{2.0 * unit(value) - 1.0,
+                         2.0 * unit(value + 1U) - 1.0,
+                         2.0 * unit(value + 2U) - 1.0};
+    const double length = glm::length(direction);
+    return length > 0.0 ? direction / length : glm::dvec3{1.0, 0.0, 0.0};
+}
+
+glm::vec3 limitVelocity(glm::dvec3 velocity, const MotionLimits& limits,
+                        std::uint32_t fallbackSeed) {
+    const double speed = glm::length(velocity);
+    if (speed > static_cast<double>(limits.maximumSpeed)) {
+        velocity *= static_cast<double>(limits.maximumSpeed) / speed;
+    } else if (speed < static_cast<double>(limits.minimumSpeed)) {
+        velocity = speed > 0.0 ? velocity * (static_cast<double>(limits.minimumSpeed) / speed)
+                               : initialDirection(fallbackSeed) * static_cast<double>(limits.minimumSpeed);
+    }
+    return glm::vec3{velocity};
+}
+
+glm::vec3 checkedPosition(const glm::dvec3& value) {
+    const double maximum = std::numeric_limits<float>::max();
+    for (glm::length_t axis = 0; axis < 3; ++axis) {
+        if (!std::isfinite(value[axis]) || std::abs(value[axis]) > maximum) {
+            throw std::overflow_error("CPU step position overflow; use a smaller time step");
+        }
+    }
+    return glm::vec3{value};
+}
+
+} // namespace
+
+CpuSimulation::CpuSimulation(std::size_t count, World world, std::uint32_t seed)
+    : world_{world}, seed_{seed} {
+    world_.validate();
+    setCount(count);
+}
+
+void CpuSimulation::step(float dt) {
+    if (!std::isfinite(dt) || dt < 0.0F) {
+        throw std::invalid_argument("Simulation dt must be finite and nonnegative");
+    }
+    if (dt == 0.0F) {
+        return;
+    }
+
+    float maximumRadius = 0.0F;
+    bool activeRules = false;
+    for (const auto& rule : rules_) {
+        if (!rule || !std::isfinite(rule->weight()) || rule->weight() < 0.0F ||
+            !std::isfinite(rule->radius()) || rule->radius() < 0.0F) {
+            throw std::invalid_argument("Rules must be nonnull with finite nonnegative parameters");
+        }
+        if (rule->weight() > 0.0F) {
+            activeRules = true;
+            maximumRadius = std::max(maximumRadius, rule->radius());
+        }
+    }
+    for (const auto& intervention : interventions_) {
+        if (!intervention) {
+            throw std::invalid_argument("Interventions must be nonnull");
+        }
+    }
+    if (activeRules && maximumRadius > 0.0F) {
+        grid_.rebuild(agents_, world_, maximumRadius);
+    }
+
+    next_ = agents_;
+    for (std::size_t index = 0; index < agents_.size(); ++index) {
+        const Agent& self = agents_[index];
+        neighbors_.clear();
+        if (activeRules && maximumRadius > 0.0F) {
+            grid_.query(index, maximumRadius, neighbors_);
+        }
+        glm::dvec3 acceleration{0.0};
+        for (const auto& rule : rules_) {
+            if (rule->weight() == 0.0F) {
+                continue;
+            }
+            ruleNeighbors_.clear();
+            const double radiusSquared = static_cast<double>(rule->radius()) * rule->radius();
+            if (rule->radius() > 0.0F) {
+                for (const Neighbor& neighbor : neighbors_) {
+                    if (neighbor.distanceSquared <= radiusSquared) {
+                        ruleNeighbors_.push_back(neighbor);
+                    }
+                }
+            }
+            const glm::vec3 steering = rule->steer(self, ruleNeighbors_, world_);
+            if (!finite(steering)) {
+                throw std::invalid_argument("Rule returned a nonfinite acceleration");
+            }
+            acceleration += glm::dvec3{steering} * static_cast<double>(rule->weight());
+        }
+        const double magnitude = glm::length(acceleration);
+        if (magnitude > static_cast<double>(limits_.maximumAcceleration)) {
+            acceleration *= static_cast<double>(limits_.maximumAcceleration) / magnitude;
+        }
+        Agent& next = next_[index];
+        next.velocity = limitVelocity(glm::dvec3{self.velocity} + acceleration * static_cast<double>(dt),
+                                      limits_, seed_ ^ self.id);
+        next.position = checkedPosition(glm::dvec3{self.position} +
+                                         glm::dvec3{next.velocity} * static_cast<double>(dt));
+        world_.applyBoundary(next.position, next.velocity);
+    }
+
+    World nextWorld = world_;
+    for (const auto& intervention : interventions_) {
+        intervention->apply(dt, next_, nextWorld);
+    }
+    normalize(next_, nextWorld, limits_);
+    agents_.swap(next_);
+    world_ = nextWorld;
+}
+
+void CpuSimulation::reset() {
+    std::vector<Agent> replacement;
+    replacement.reserve(agents_.size());
+    for (std::size_t index = 0; index < agents_.size(); ++index) {
+        replacement.push_back(makeAgent(index));
+    }
+    agents_.swap(replacement);
+}
+
+std::size_t CpuSimulation::count() const noexcept { return agents_.size(); }
+
+void CpuSimulation::setCount(std::size_t count) {
+    validateCount(count);
+    const std::size_t oldCount = agents_.size();
+    // Allocate before modifying live state; makeAgent cannot fail after validation.
+    agents_.reserve(count);
+    for (std::size_t index = oldCount; index < count; ++index) {
+        agents_.push_back(makeAgent(index));
+    }
+    if (count < oldCount) {
+        agents_.resize(count);
+    }
+}
+
+Backend CpuSimulation::backend() const noexcept { return Backend::CPU; }
+std::span<const Agent> CpuSimulation::agents() const noexcept { return agents_; }
+std::vector<std::unique_ptr<Rule>>& CpuSimulation::rules() noexcept { return rules_; }
+std::vector<std::unique_ptr<Intervention>>& CpuSimulation::interventions() noexcept { return interventions_; }
+const World& CpuSimulation::world() const noexcept { return world_; }
+
+void CpuSimulation::setWorld(const World& world) {
+    next_ = agents_;
+    normalize(next_, world, limits_);
+    agents_.swap(next_);
+    world_ = world;
+}
+
+MotionLimits CpuSimulation::motionLimits() const noexcept { return limits_; }
+
+void CpuSimulation::setMotionLimits(const MotionLimits& limits) {
+    validateLimits(limits);
+    next_ = agents_;
+    normalize(next_, world_, limits);
+    agents_.swap(next_);
+    limits_ = limits;
+}
+
+void CpuSimulation::setAgents(std::span<const Agent> agents) {
+    validateCount(agents.size());
+    std::vector<Agent> replacement{agents.begin(), agents.end()};
+    normalize(replacement, world_, limits_);
+    agents_.swap(replacement);
+}
+
+Agent CpuSimulation::makeAgent(std::size_t index) const {
+    Agent agent;
+    agent.id = static_cast<std::uint32_t>(index);
+    const std::uint32_t key = mix(seed_ ^ agent.id);
+    for (glm::length_t axis = 0; axis < 3; ++axis) {
+        const double fraction = unit(key + static_cast<std::uint32_t>(axis));
+        agent.position[axis] = static_cast<float>(static_cast<double>(world_.minimum[axis]) +
+            (static_cast<double>(world_.maximum[axis]) - world_.minimum[axis]) * fraction);
+    }
+    const double speed = (static_cast<double>(limits_.minimumSpeed) + limits_.maximumSpeed) * 0.5;
+    agent.velocity = glm::vec3{initialDirection(key + 3U) * speed};
+    world_.applyBoundary(agent.position, agent.velocity);
+    return agent;
+}
+
+void CpuSimulation::normalize(std::vector<Agent>& agents, const World& world,
+                              const MotionLimits& limits) const {
+    world.validate();
+    validateCount(agents.size());
+    for (Agent& agent : agents) {
+        if (!finite(agent.position) || !finite(agent.velocity) || !finite(agent.color) ||
+            !std::isfinite(agent.size) || agent.size < 0.0F || !std::isfinite(agent.reserved)) {
+            throw std::invalid_argument("Agent records must be finite with a nonnegative size");
+        }
+        agent.velocity = limitVelocity(glm::dvec3{agent.velocity}, limits, seed_ ^ agent.id);
+        world.applyBoundary(agent.position, agent.velocity);
+    }
+}
+
+} // namespace emergences::sim::cpu
