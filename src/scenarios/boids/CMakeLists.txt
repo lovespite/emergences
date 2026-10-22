@@ -1,11 +1,12 @@
-add_library(emergences_boids STATIC Alignment.cpp Cohesion.cpp Separation.cpp)
+add_library(emergences_boids STATIC Alignment.cpp Cohesion.cpp Separation.cpp
+    BoidsScene.cpp CursorIntervention.cpp CursorRepel.cpp CursorAttract.cpp)
 add_library(emergences::boids ALIAS emergences_boids)
 target_link_libraries(emergences_boids PUBLIC emergences::sim)
 emergences_target_defaults(emergences_boids)
 
 if(BUILD_TESTING)
     set(header_checks)
-    foreach(header Alignment Cohesion Separation)
+    foreach(header Alignment Cohesion Separation BoidsScene CursorIntervention CursorRepel CursorAttract)
         set(check "${CMAKE_CURRENT_BINARY_DIR}/header_checks/${header}.cpp")
         file(GENERATE OUTPUT "${check}" CONTENT "#include \"scenarios/boids/${header}.h\"\n")
         list(APPEND header_checks "${check}")
@@ -23,11 +24,21 @@ if(BUILD_TESTING)
     target_link_libraries(emergences_boids_simulation_tests PRIVATE emergences::boids)
     emergences_target_defaults(emergences_boids_simulation_tests)
     add_test(NAME boids_simulation COMMAND emergences_boids_simulation_tests)
-    set_tests_properties(boids_rules boids_simulation PROPERTIES LABELS "cpu;sim;boids" TIMEOUT 30)
+    add_executable(emergences_cursor_tests tests/CursorInterventionTests.cpp)
+    target_link_libraries(emergences_cursor_tests PRIVATE emergences::boids)
+    emergences_target_defaults(emergences_cursor_tests)
+    add_test(NAME boids_cursor COMMAND emergences_cursor_tests)
+
+    add_executable(emergences_boids_scene_tests tests/BoidsSceneTests.cpp)
+    target_link_libraries(emergences_boids_scene_tests PRIVATE emergences::boids)
+    emergences_target_defaults(emergences_boids_scene_tests)
+    add_test(NAME boids_scene COMMAND emergences_boids_scene_tests)
+    set_tests_properties(boids_rules boids_simulation boids_cursor boids_scene
+        PROPERTIES LABELS "cpu;sim;boids" TIMEOUT 30)
 endif()
 
 if(EMERGENCES_BUILD_APP)
-    add_executable(emergences main.cpp BoidsApp.cpp RenderPreview.cpp)
+    add_executable(emergences main.cpp BoidsApp.cpp LiveBoids.cpp RenderPreview.cpp)
     target_link_libraries(emergences PRIVATE emergences::core emergences::boids emergences::imgui)
     target_compile_definitions(emergences PRIVATE
         EMERGENCES_VERSION="${PROJECT_VERSION}"
@@ -42,8 +53,9 @@ if(EMERGENCES_BUILD_APP)
     if(BUILD_TESTING AND EMERGENCES_ENABLE_GPU_TESTS)
         add_test(NAME vulkan_triangle COMMAND emergences --smoke-test)
         add_test(NAME vulkan_particles COMMAND emergences --render-smoke-test)
-        set_tests_properties(vulkan_triangle vulkan_particles PROPERTIES
-            TIMEOUT 30 LABELS "gpu;smoke"
+        add_test(NAME vulkan_boids COMMAND emergences --boids-smoke-test)
+        set_tests_properties(vulkan_triangle vulkan_particles vulkan_boids PROPERTIES
+            TIMEOUT 60 LABELS "gpu;smoke"
             RUN_SERIAL TRUE
             FAIL_REGULAR_EXPRESSION "\\[Vulkan validation\\];Validation Error")
     endif()

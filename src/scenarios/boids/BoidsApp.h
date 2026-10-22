@@ -4,10 +4,11 @@
 
 namespace emergences::scenarios::boids {
 
-// Scenario composition root. Rendering and simulation are added in PLAN.md order.
+// Scenario composition root, with separate renderer regression fixtures.
 class BoidsApp {
 public:
     int run(const std::filesystem::path& shaderDirectory, bool smokeTest = false);
+    int runTriangle(const std::filesystem::path& shaderDirectory, bool smokeTest = false);
     int runPreview(const std::filesystem::path& shaderDirectory, bool smokeTest = false);
 };
 

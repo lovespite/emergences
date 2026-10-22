@@ -19,7 +19,8 @@ glm::vec3 Separation::steer(const sim::Agent& self,
         if (!detail::withinRadius(neighbor, radius_)) {
             continue;
         }
-        const glm::vec3 displacement = world.displacement(self.position, neighbor.agent->position);
+        const glm::vec3 displacement = neighbor.displacement ? *neighbor.displacement
+            : world.displacement(self.position, neighbor.agent->position);
         // An exact overlap has no direction. Ignore it rather than inventing one;
         // near overlaps retain their direction with a bounded inverse-distance force.
         if (displacement == glm::vec3(0.0F)) {

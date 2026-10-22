@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <numbers>
 
 namespace emergences::core {
@@ -21,6 +22,10 @@ constexpr double maximumTargetCoordinate = 100000.0;
 
 bool finiteDeltas(float x, float y) {
     return std::isfinite(x) && std::isfinite(y);
+}
+
+bool finiteVector(const glm::vec3& value) {
+    return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
 }
 
 } // namespace
@@ -51,6 +56,56 @@ glm::mat4 Camera::viewProjection(float aspect) const {
     auto projection = glm::perspectiveRH_ZO(fieldOfView, aspect, 0.1F, 5000.0F);
     projection[1][1] *= -1.0F;
     return projection * glm::lookAtRH(position(), target_, up());
+}
+
+std::optional<Camera::Ray> Camera::screenRay(
+    float normalizedX, float normalizedY, float aspect) const {
+    if (!finiteDeltas(normalizedX, normalizedY) ||
+        normalizedX < 0.0F || normalizedX > 1.0F ||
+        normalizedY < 0.0F || normalizedY > 1.0F ||
+        !std::isfinite(aspect) || aspect <= 0.0F) {
+        return std::nullopt;
+    }
+    aspect = std::clamp(aspect, 0.01F, 100.0F);
+    const float halfHeight = std::tan(fieldOfView / 2.0F);
+    const glm::vec3 forward = glm::cross(up(), right());
+    const glm::vec3 direction = forward +
+        right() * ((2.0F * normalizedX - 1.0F) * halfHeight * aspect) +
+        up() * ((1.0F - 2.0F * normalizedY) * halfHeight);
+    return Ray{position(), glm::normalize(direction)};
+}
+
+std::optional<glm::vec3> Camera::screenToPlane(
+    float normalizedX, float normalizedY, float aspect,
+    const glm::vec3& planePoint, const glm::vec3& planeNormal) const {
+    const auto ray = screenRay(normalizedX, normalizedY, aspect);
+    if (!ray || !finiteVector(planePoint) || !finiteVector(planeNormal)) {
+        return std::nullopt;
+    }
+    // Doubles keep both tiny and huge finite plane normals usable.
+    const glm::dvec3 normal(planeNormal);
+    const double normalLength = glm::length(normal);
+    if (normalLength == 0.0) {
+        return std::nullopt;
+    }
+    const glm::dvec3 unitNormal = normal / normalLength;
+    const glm::dvec3 direction(ray->direction);
+    const double denominator = glm::dot(direction, unitNormal);
+    if (std::abs(denominator) < 1.0e-6) {
+        return std::nullopt;
+    }
+    const glm::dvec3 origin(ray->origin);
+    const double distance = glm::dot(glm::dvec3(planePoint) - origin, unitNormal) / denominator;
+    if (!std::isfinite(distance) || distance < 0.0) {
+        return std::nullopt;
+    }
+    const glm::dvec3 hit = origin + direction * distance;
+    for (glm::length_t axis = 0; axis < 3; ++axis) {
+        if (!std::isfinite(hit[axis]) || std::abs(hit[axis]) > std::numeric_limits<float>::max()) {
+            return std::nullopt;
+        }
+    }
+    return glm::vec3(hit);
 }
 
 void Camera::orbit(float deltaX, float deltaY) {

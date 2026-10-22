@@ -10,7 +10,7 @@
 
 namespace emergences::scenarios::boids {
 
-int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest) {
+int BoidsApp::runTriangle(const std::filesystem::path& shaderDirectory, bool smokeTest) {
     // Destruction order: renderer, device/surface, then native window.
     core::Window window{1280, 720, "Emergences | Vulkan triangle"};
     core::Context context{window};

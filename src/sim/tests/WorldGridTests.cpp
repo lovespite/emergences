@@ -92,6 +92,14 @@ void checkGrid(const std::vector<Agent>& agents, const World& world,
                             std::max(std::numeric_limits<double>::denorm_min(),
                                      expectedDistance * 1.0e-12),
                         "Grid must preserve the double precision periodic squared distance");
+                require(neighbor.displacement.has_value() && *neighbor.displacement ==
+                            world.displacement(agents[self].position, agents[index].position),
+                        "Cached displacement must exactly match the checked World result");
+                const auto checked = world.displacement(agents[self].position, agents[index].position);
+                for (glm::length_t axis = 0; axis < 3; ++axis) {
+                    require(std::signbit((*neighbor.displacement)[axis]) == std::signbit(checked[axis]),
+                            "Cached displacement must also preserve signed zero");
+                }
             }
             std::sort(actual.begin(), actual.end());
             require(actual == expected, "Grid neighbor indices must equal brute force without duplicates");
@@ -235,6 +243,11 @@ void extremeGridScales() {
     agents[2].position = glm::vec3(large * 0.75F);
     checkGrid(agents, largeWorld, std::numeric_limits<float>::max(),
               {large * 0.25F, large, std::numeric_limits<float>::max()});
+    const World asymmetric{glm::vec3{-large}, glm::vec3{1.0F}};
+    agents[0].position = glm::vec3{0.0F};
+    agents[1].position = asymmetric.minimum;
+    agents[2].position = glm::vec3{0.5F};
+    checkGrid(agents, asymmetric, large, {1.0F, large});
 }
 
 void invalidInputsAndRebuild() {

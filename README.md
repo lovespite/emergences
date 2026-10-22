@@ -2,7 +2,7 @@
 
 基于 C++20 和 Vulkan 的涌现模拟项目。项目按通用渲染层、通用模拟层和具体场景三层组织，首个场景采用 Boids 鸟群模型。完整方案见 [PLAN.md](PLAN.md)。
 
-**Phase 1 的 Vulkan 渲染框架与 Phase 2 的 CPU 模拟、Boids 三规则已完成。** 模拟库可以独立于 Vulkan 构建和运行。默认应用仍显示带轨道相机、地面网格、世界边界和 ImGui 面板的程序化粒子预览，支持窗口缩放重建和最小化暂停绘制；真实 Boids 状态与渲染、参数面板和光标干预的连接安排在 Phase 3。
+**Phase 1–3 已完成。** 默认应用运行真实的 CPU Boids 模拟，连接 Vulkan 粒子渲染、实时参数面板和光标吸引 / 排斥干预；保留轨道相机、地面网格、世界边界、窗口缩放重建和最小化暂停绘制。模拟、场景状态和干预库均可独立于 Vulkan 构建和测试。GPU compute 留待 Phase 4。
 
 ## 构建前置
 
@@ -11,9 +11,11 @@
 - 构建应用时，需要完整的 LunarG Vulkan SDK，包括头文件、链接库和 `glslc`。显卡驱动附带的 Vulkan 运行时不足以编译项目。
 - 首次配置需要联网下载固定版本的 GLFW、GLM 和 Dear ImGui。依赖版本及缓存说明见 [third_party/README.md](third_party/README.md)。
 
-Phase 1 的历史验收记录（2026-10-22）：本机 SDK `1.4.363.0`（`D:\VulkanSDK\1.4.363.0`）的头文件、链接库、`glslc` 和 `VK_LAYER_KHRONOS_validation` 均可用。应用在 NVIDIA GeForce RTX 4060 Laptop GPU 上通过 Debug、Release 完整构建，当时两种配置的 CTest 均为 **3/3 通过**：`camera_math`、`vulkan_triangle`、`vulkan_particles`。Debug 额外启用 `VK_LAYER_VALIDATE_SYNC=1` 后无校验诊断。模拟公共头文件独立编译和 `Agent` 布局检查也已通过。该记录不包含本次 Phase 2 新增的四项 CPU 测试。
+Phase 1 的历史验收记录（2026-10-22）：本机 SDK `1.4.363.0`（`D:\VulkanSDK\1.4.363.0`）的头文件、链接库、`glslc` 和 `VK_LAYER_KHRONOS_validation` 均可用。应用在 NVIDIA GeForce RTX 4060 Laptop GPU 上通过 Debug、Release 完整构建，当时两种配置的 CTest 均为 **3/3 通过**：`camera_math`、`vulkan_triangle`、`vulkan_particles`。Debug 额外启用 `VK_LAYER_VALIDATE_SYNC=1` 后无校验诊断。模拟公共头文件独立编译和 `Agent` 布局检查也已通过。该记录不包含 Phase 2 新增的四项 CPU 测试。
 
 Phase 2 验收记录（2026-10-22）：Debug / Release 全工程构建成功，两种配置的完整 CTest 均为 **7/7 通过**，包含 `sim_world_grid`、`sim_cpu`、`boids_rules`、`boids_simulation`、`camera_math`、`vulkan_triangle`、`vulkan_particles`。Debug 额外开启 `VK_LAYER_VALIDATE_SYNC=1` 后无校验诊断。独立 CPU 路径设置 `EMERGENCES_BUILD_APP=OFF`，在新目录 `build/sim-phase2` 完成 Debug / Release 构建，两种配置的 CPU 测试均为 **4/4 通过**；使用新目录是为了保留旧宿主工具集的 `build/sim-only` 缓存。
+
+Phase 3 验收记录（2026-10-22）：Debug / Release 完整构建成功，完整 CTest 各 **10/10 通过**；Debug 开启 `VK_LAYER_VALIDATE_SYNC=1` 后无校验诊断。独立 CPU 路径在 `build/sim-phase3` 设置 `EMERGENCES_BUILD_APP=OFF`，Debug / Release 构建及测试各 **6/6 通过**。新增检查覆盖固定步长、暂停 / 单步 / 重置、着色、光标力和屏幕射线拾取；真实场景冒烟还对照未施力轨迹，验证两种干预实际改变运动。SDK 截图确认面板、密度色、圆点、吸引 / 排斥范围及真实鸟群聚集；截图与日志位于 `build-host-x64/verification-phase3/`。这些检查不包含逐项鼠标点击验收或正式性能基准。
 
 SDK 截图层已验证箭头、圆点和缩放后的实际画面，本机产物位于 `build-host-x64/verification-phase1/`。冒烟测试通过程序设置切换模式和相机，并绘制面板；这些检查不包含鼠标逐项点击面板的 UI 自动化。
 
@@ -35,26 +37,36 @@ cmake --build --preset debug
 .\build-host-x64\Debug\emergences.exe
 ```
 
-默认显示 2048 个粒子的渲染预览，面板提供以下操作：
+默认在 `[-20,20]` 的三维世界中运行 2048 个真实 Boids。面板提供以下操作：
 
-- 数量 0–20000、箭头 / 圆点模式、粒子大小、朝向 / 速度 / 单色编码。
-- 预览动画暂停与重置、相机重置、地面网格与世界边界开关。
+- 数量 0–20000、暂停、暂停时单步、重置；Backend 当前为 CPU，GPU compute 选项灰显。
+- **Behavior**：三条规则各自的权重 / 半径、最小 / 最大速度、最大加速度及 Wrap / Bounce 边界。权重设为 0 可关闭对应规则。
+- **Behavior → Cursor force**：选择 Repel / Attract，设置作用半径、强度及 XZ 交互平面的高度。启用后，光标悬停在世界中的有效投影点即可施力；三个圆环显示球形作用范围。鼠标位于 UI、操作相机、离开窗口或窗口失焦时暂停施力。
+- **View**：箭头 / 圆点、大小、Direction / Speed / Density / Solid 四种颜色、地面网格与世界边界开关、相机重置。密度色使用半径 5 内的邻居数，0 为蓝色、32 及以上为橙红色，周期边界两侧邻居也计入。
 - 左键拖动旋转、中键拖动平移、滚轮缩放；ImGui 捕获鼠标时，相机不响应相同输入。
 
-关闭窗口或按 Escape 即可退出。命令行另提供两个独立的呈现测试：
+场景以固定 `1/120` 秒推进。交互应用为每帧模拟设置 **8 ms 工作预算**，每完成一个完整步检查一次预算，单帧最多 8 步；超额时丢弃整步积压并保留不足一步的余量。单步不能中途打断，因此这不是硬性的 8 ms 帧耗时保证。高负载时模拟时间会放慢，面板显示减速提示、每帧耗时与步数，避免连续补算八个慢步拖垮界面。暂停不积累时间；重置保留当前数量、参数和暂停状态，同时清空模拟时钟并恢复确定性初始状态。
+
+2026-10-22 针对「运行一段时间降至约 1 FPS」的性能回归使用当时的默认规则参数（`weight / radius`：Alignment `1 / 5`、Cohesion `0.6 / 5`、Separation `1.5 / 2`）：2048 个体演化 20 秒后，平均邻居数由 16.5 增至 304。已让空间查询缓存最短位移、复用最大半径邻居列表，消除规则中的重复周期计算，并加入上述交互预算。对保存的同一 20 秒状态，本机 Release 配对测量单步由约 **80.6 ms 降至 15.2 ms**；交互推进由八步约 **624 ms** 降至预算下的一步约 **14 ms**。后者包含模拟时钟减速，不能解读为维持相同实时推进速度下的帧率提升。8 个快照的一步输出，以及该组参数下连续 2400 步的 5 / 10 / 15 / 20 秒状态均与旧版逐字节一致。以上是旧默认参数的历史测量，不代表当前默认参数的性能。基准程序、快照与日志在 `build/perf-diagnosis/`；数值受主机负载影响，不承诺所有密度或数量下的帧率。
+
+关闭窗口或按 Escape 即可退出。`--render-preview` 可打开原有程序化粒子预览。命令行提供三个独立的呈现测试：
 
 ```powershell
 .\build-host-x64\Debug\emergences.exe --help
 .\build-host-x64\Debug\emergences.exe --version
+.\build-host-x64\Debug\emergences.exe --render-preview
 .\build-host-x64\Debug\emergences.exe --smoke-test
 .\build-host-x64\Debug\emergences.exe --render-smoke-test
+.\build-host-x64\Debug\emergences.exe --boids-smoke-test
 ```
 
 `--smoke-test` 保留原有渐变三角形测试：实际提交并呈现至少 12 帧，在第 4 和第 8 帧后调整窗口大小，确认至少 3 代交换链后退出。
 
-`--render-smoke-test` 呈现至少 24 帧，依次使用 0 / 1 / 257 / 8192 / 96 / 2048 个粒子，覆盖两个帧槽的空数组、扩容与缩减，以及箭头 / 圆点、颜色、动画暂停、网格 / 边界、相机和 ImGui 绘制；同样执行两次缩放并要求至少 3 代交换链。两个测试在未完成检查就关闭窗口时失败，Debug 下要求校验层可用，并在 API 校验错误时返回失败。
+`--render-smoke-test` 呈现至少 24 帧，依次使用 0 / 1 / 257 / 8192 / 96 / 2048 个程序化粒子，覆盖两个帧槽的空数组、扩容与缩减，以及箭头 / 圆点、颜色、动画暂停、网格 / 边界、相机和 ImGui 绘制；同样执行两次缩放并要求至少 3 代交换链。
 
-Release 构建使用 `cmake --build --preset release`，程序位于 `build-host-x64/Release/emergences.exe`。`vs2022` 预设固定使用 `build-host-x64` 构建目录和 x64 宿主工具集；不使用预设时，可配置同等目标：
+`--boids-smoke-test` 呈现至少 48 帧真实 CPU 模拟，依次覆盖 0 / 1 / 257 / 4096 / 96 / 512 / 2048 个体，检查运动、暂停 / 单步 / 重置，切换规则参数、速度限制、两种边界及四种颜色，并对照未施力轨迹验证吸引 / 排斥实际生效，同时检查禁止光标输入时力被关闭。末段使用 16 个密集团块，并以零工作预算确定性检查补算抑制及界面提示，不依赖机器速度断言。它执行两次窗口缩放并要求至少 3 代交换链。三个测试在未完成检查就关闭窗口时失败，Debug 下要求校验层可用，并在 API 校验错误时返回失败。冒烟测试注入固定光标坐标与输入条件，不模拟逐项鼠标点击或真实窗口焦点事件。
+
+交互运行建议使用 Release：`cmake --build --preset release`，程序位于 `build-host-x64/Release/emergences.exe`。CPU 耗时会随个体数量、规则半径和局部密度增加，卡顿时可减少数量或半径。`vs2022` 预设固定使用 `build-host-x64` 构建目录和 x64 宿主工具集；不使用预设时，可配置同等目标：
 
 ```powershell
 cmake -S . -B build-host-x64 -G "Visual Studio 17 2022" -A x64 -T host=x64
@@ -77,7 +89,7 @@ cmake --build --preset sim-release
 ctest --preset sim-release
 ```
 
-`vs2022-sim` 使用独立目录 `build/sim-only` 并设置 `EMERGENCES_BUILD_APP=OFF`。`emergences::sim` 包含 World、SpatialHash 和 CpuSimulation；`emergences::boids` 包含 Alignment / Cohesion / Separation，并传递链接模拟库。启用 `BUILD_TESTING` 时，模拟层和规则公共头文件分别独立编译，检查头文件自包含及 `Agent` 布局约束，同时注册以下 CPU 测试：
+`vs2022-sim` 使用独立目录 `build/sim-only` 并设置 `EMERGENCES_BUILD_APP=OFF`。`emergences::sim` 包含 World、SpatialHash 和 CpuSimulation；`emergences::boids` 包含三规则、BoidsScene、CursorIntervention / CursorRepel / CursorAttract，并传递链接模拟库。启用 `BUILD_TESTING` 时，模拟层和场景库公共头文件分别独立编译，检查头文件自包含及 `Agent` 布局约束，同时注册以下六项 CPU 测试：
 
 | CTest 名称 | 检查范围 |
 | --- | --- |
@@ -85,6 +97,8 @@ ctest --preset sim-release
 | `sim_cpu` | 同步步进、规则加权、速度 / 加速度限幅、确定性初始化、重置 / 数量变化、干预和异常状态保持 |
 | `boids_rules` | 三规则数学、独立半径、周期接缝、浮点半径边界、空邻域 / 重合 / 零半径及参数校验 |
 | `boids_simulation` | 两种边界各 100 步全量邻域对照，以及 512 个体、240 步的确定性重放 |
+| `boids_scene` | 60 / 120 / 144 Hz 帧时间分割一致性、步数上限、暂停 / 单步 / 重置、显示颜色不修改模拟、周期密度与固定色阶 |
+| `boids_cursor` | 吸引 / 排斥方向、距离衰减、开关 / 零强度 / 零半径、周期接缝、非法输入与速度限制 |
 
 这些测试也随完整应用构建注册。GPU 模拟尚未实现。
 
@@ -115,17 +129,19 @@ int main() {
 }
 ```
 
-`World` 默认是 `[-25,25]` 的周期世界（`BoundaryMode::Wrap`），也支持 `Bounce` 硬墙反弹和越过多次边界的位移。周期邻居距离、聚拢和分离均使用最短周期方向，因此两侧接缝附近的个体相互可见。世界范围必须有限且各轴跨度为可表示的正浮点数。
+`World` 默认是 `[-25,25]` 的周期世界（`BoundaryMode::Wrap`），应用的 `BoidsScene` 显式使用 `[-20,20]` 以匹配渲染边界。两者都支持 `Bounce` 硬墙反弹和越过多次边界的位移。周期邻居距离、聚拢和分离均使用最短周期方向，因此两侧接缝附近的个体相互可见。世界范围必须有限且各轴跨度为可表示的正浮点数。
 
 `SpatialHash` 每步按启用规则的最大半径重建稀疏均匀网格。通常每轴格宽至少为最大半径，查询相邻至多 27 格；若某轴世界跨度小于半径，则该轴仅使用一格。周期查询去重、按数组索引排除自身，最后以精确距离筛选。每条规则再按自己的半径筛选，包含恰好位于半径边界的邻居，半径为零时邻域为空。网格减少普通分布下的候选数量，但密集群体或大半径仍可退化为近似全量两两比较，不保证线性最坏复杂度。
 
-三规则的默认 `weight / radius` 分别是 Alignment `1 / 5`、Cohesion `0.6 / 5`、Separation `1.5 / 2`。Alignment 返回邻居平均速度减自身速度；Cohesion 返回邻居最短位移的平均值；Separation 平均累加 `-displacement / max(distanceSquared, 1e-6)`，精确重合时跳过无方向的邻居。规则仅返回未加权加速度，后端乘权重一次，零权重禁用该规则。参数构造与修改均拒绝负数和非有限值。
+三规则的默认 `weight / radius` 分别是 Alignment `0.45 / 5`、Cohesion `0.11 / 6`、Separation `2 / 2`。Alignment 返回邻居平均速度减自身速度；Cohesion 返回邻居最短位移的平均值；Separation 平均累加 `-displacement / max(distanceSquared, 1e-6)`，精确重合时跳过无方向的邻居。规则仅返回未加权加速度，后端乘权重一次，零权重禁用该规则。参数构造与修改均拒绝负数和非有限值。
 
 每一步的所有规则读取同一份旧状态，后端合并并限制加速度，再按半隐式 Euler 更新速度、限制速度范围、更新位置并处理边界。默认最小 / 最大速度是 `1 / 8`，最大加速度是 `20`，可通过 `setMotionLimits` 调整；零速度需要提升到最小速度时使用由种子和 ID 决定的方向。`step(dt)` 接受有限非负秒数，`dt=0` 不推进；建议以固定步长运行，并由应用累积帧时间，避免帧率变化改变模拟轨迹。
 
 初始化由种子和索引确定。`reset()` 按当前数量、世界和速度限制重新生成初始状态；`setCount()` 缩减时保留前缀，增加时保留现有个体并确定性地生成追加个体。`setAgents()` 可导入状态且保留提供的 ID；ID 是元数据，不是邻域数组索引，导入与追加组合使用时不自动保证唯一。`setWorld()`、`setMotionLimits()` 和状态导入会重新规范速度与边界。
 
-干预在积分后按插入顺序执行，可以修改个体数量、状态和世界。全部干预结束后，后端校验最终状态、重施速度限制与边界，再提交新状态；失败的步进保留外部可见的旧个体和世界，但无法撤销回调对这些记录以外的副作用。规则与干预集合只能在步进之间修改，不能包含空指针。当前提供干预接口，光标吸引 / 排斥的具体实现与交互在 Phase 3 加入。
+干预在积分后按插入顺序执行，可以修改个体数量、状态和世界。全部干预结束后，后端校验最终状态、重施速度限制与边界，再提交新状态；失败的步进保留外部可见的旧个体和世界，但无法撤销回调对这些记录以外的副作用。规则与干预集合只能在步进之间修改，不能包含空指针。`CursorRepel` / `CursorAttract` 是独立于 UI 的 CPU 干预：使用世界最短位移计算球形邻域，在作用半径内按 reverse smoothstep 平滑衰减，以强度乘 `dt` 修改速度；之后仍遵守后端速度限制。
+
+`BoidsScene` 组装三规则并管理固定步长、模拟时钟和显示颜色。`simulation()` 暴露底层 CPU 参数接口；`advance(elapsedSeconds, workBudgetSeconds)` 拒绝负数和非法时间，工作预算默认正无穷，保留无墙钟限制的确定性推进；交互应用显式传入 `0.008`。`lastAdvanceLimited()` 表示最近一次推进丢弃了时间，`singleStep()` 只在暂停时推进一步。`refreshColors(ColorMode)` 生成独立显示记录，方向、速度、密度与纯色切换不会修改模拟状态。密度查询复用 `SpatialHash`，使用固定邻居数色阶，避免远处个体数量变化导致局部颜色重新缩放。
 
 ## 可选 GPU 呈现测试
 
@@ -141,11 +157,12 @@ ctest --test-dir build-host-x64 -C Release --output-on-failure
 
 | CTest 名称 | 检查范围 |
 | --- | --- |
-| `camera_math` | 相机默认取景、Vulkan 深度 / Y 轴约定、旋转 / 平移 / 缩放、重置和极端输入 |
+| `camera_math` | 相机默认取景、Vulkan 深度 / Y 轴约定、旋转 / 平移 / 缩放、屏幕射线与平面拾取、重置和极端输入 |
 | `vulkan_triangle` | `--smoke-test` 的三角形呈现和交换链缩放 |
 | `vulkan_particles` | `--render-smoke-test` 的粒子、辅助线、面板、相机和缓冲扩容路径 |
+| `vulkan_boids` | `--boids-smoke-test` 的真实模拟上传、控制状态、光标力、四种颜色和缩放路径 |
 
-两个 GPU 测试会短暂创建窗口并自动缩放。CTest 会检查输出，在任何 `[Vulkan validation]` 消息（包括资源销毁时的消息）出现时失败；Loader 的一般诊断仍会输出。GPU 测试默认关闭，`camera_math` 在构建应用且启用 `BUILD_TESTING` 时注册。完整应用套件包含四项 CPU 模拟测试与 `camera_math`，启用 GPU 测试后再加入两项呈现测试；单独模拟构建运行上述四项 CPU 测试。
+三个 GPU 呈现测试会短暂创建窗口并自动缩放，测试的是渲染路径，当前模拟仍使用 CPU。CTest 会检查输出，在任何 `[Vulkan validation]` 消息（包括资源销毁时的消息）出现时失败；Loader 的一般诊断仍会输出。GPU 测试默认关闭，`camera_math` 在构建应用且启用 `BUILD_TESTING` 时注册。完整应用套件包含六项 CPU 模拟 / 场景测试与 `camera_math`，启用 GPU 测试后再加入三项呈现测试，合计十项；单独模拟构建运行上述六项 CPU 测试。
 
 需要额外复查同步时，可在当前 PowerShell 会话设置 `$env:VK_LAYER_VALIDATE_SYNC = '1'` 后运行 `ctest --preset debug`，完成后以 `Remove-Item Env:VK_LAYER_VALIDATE_SYNC` 清除该会话设置。
 
@@ -155,16 +172,16 @@ ctest --test-dir build-host-x64 -C Release --output-on-failure
 | --- | --- |
 | `src/core/` | Window / Context；带逐图像深度附件的 Swapchain；共享命令记录、双帧同步与呈现的 FrameRenderer；Pipeline / Buffer / Descriptor；Camera、TriangleRenderer、ParticleRenderer、LineRenderer、ImGuiLayer |
 | `src/sim/` | `Agent`、`World`、`Rule`、`Intervention`、`Simulation` 和后端枚举；`cpu/` 下为 SpatialHash 与 CpuSimulation |
-| `src/scenarios/boids/` | 纯 CPU 的 Boids 三规则与测试；应用入口、程序化粒子预览、面板和两类呈现测试，Phase 3 对接真实模拟 |
+| `src/scenarios/boids/` | 纯 CPU 的三规则、BoidsScene、光标干预及测试；LiveBoids 连接模拟 / 渲染 / 面板，保留程序化预览与三类呈现测试 |
 | `shaders/` | `particle.*` 粒子、`grid.*` 辅助线及 `smoke/triangle.*` 三角形着色器 |
 | `cmake/` | 依赖获取与着色器编译辅助配置 |
 | `third_party/` | 第三方依赖说明；实际源码由 FetchContent 放入构建目录 |
 
 `Agent` 使用 16 字节对齐、48 字节固定布局，包含 position / size、velocity / reserved、color / id 三组数据；字段偏移通过 `static_assert` 固定，以便后续与 GLSL `std430` 记录对应。应使用 GLM 默认的 packed `vec3`，不能直接启用会改变布局的 aligned 向量类型。
 
-`Neighbor` 是 CPU 规则调用期间借用的邻居记录，使用 `double distanceSquared` 保留半径边界比较的精度；它不属于 `Agent` 的 GPU 记录，不改变上述 48 字节布局。
+`Neighbor` 是 CPU 规则调用期间借用的邻居记录，使用 `double distanceSquared` 保留半径边界比较的精度，并可携带 `std::optional<glm::vec3> displacement`，复用同一 self / 邻居 / 世界下的最短位移。手工构造的记录可省略缓存，此时规则回退到 `World::displacement`；缓存只在查询借用期有效。它不属于 `Agent` 的 GPU 记录，不改变上述 48 字节布局。
 
-渲染层使用独立的 `core::Particle` 记录和 `SceneView` 相机常量。粒子数据经各帧槽的 storage buffer 上传，顶点着色器通过 `gl_InstanceIndex` 读取，生成箭头或圆点 billboard；辅助线使用静态顶点缓冲。`FrameRenderer` 统一负责三角形与预览的提交，交换链每幅图像各有深度附件，ImGui 的 Vulkan 资源在重建时重新配置。
+渲染层使用独立的 `core::Particle` 记录和 `SceneView` 相机常量。场景将 CPU 显示记录转换为粒子数据，经各帧槽的 storage buffer 上传；顶点着色器通过 `gl_InstanceIndex` 读取，生成箭头或圆点 billboard。网格 / 边界使用静态顶点缓冲，光标作用范围由 ImGui 背景绘制列表显示为三个空间圆环。`FrameRenderer` 统一负责三角形、程序化预览与真实 Boids 的提交，交换链每幅图像各有深度附件，ImGui 的 Vulkan 资源在重建时重新配置。
 
 Vulkan 实现参考：[描述符布局与缓冲](https://docs.vulkan.org/tutorial/latest/05_Uniform_buffers/00_Descriptor_set_layout_and_buffer.html)、[深度缓冲](https://docs.vulkan.org/tutorial/latest/07_Depth_buffering.html)。
 
@@ -172,5 +189,4 @@ Vulkan 实现参考：[描述符布局与缓冲](https://docs.vulkan.org/tutoria
 
 ## 后续实现顺序
 
-1. **Phase 3**：将 Phase 2 的真实模拟接入现有渲染器与面板，加入规则权重 / 半径、速度限制和光标吸引 / 排斥干预。
-2. **Phase 4**：在 CPU 场景验证后实现 GPU compute、资源与同步桥接及后端切换。
+下一阶段为 **Phase 4**：GPU compute、资源与同步桥接及后端切换。Phase 3 的人工交互复查可按上述面板和相机操作进行。

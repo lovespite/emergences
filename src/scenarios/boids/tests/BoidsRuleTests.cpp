@@ -1,6 +1,7 @@
 #include "scenarios/boids/Alignment.h"
 #include "scenarios/boids/Cohesion.h"
 #include "scenarios/boids/Separation.h"
+#include "sim/cpu/SpatialHash.h"
 
 #include <glm/geometric.hpp>
 
@@ -10,6 +11,7 @@
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <vector>
 
 namespace {
 
@@ -47,6 +49,44 @@ Neighbor neighborOf(const Agent& self, const Agent& neighbor, const World& world
     return {&neighbor, glm::dot(displacement, displacement)};
 }
 
+void cachedAndUncachedNeighborsAgree() {
+    // Include periodic seams, exact half-period ties and their adjacent floats,
+    // coincident agents, narrow axes, and each rule's independent radius.
+    for (const auto mode : {BoundaryMode::Wrap, BoundaryMode::Bounce}) {
+        const World world{{-5.0F, -1.0F, 2.0F}, {5.0F, 3.0F, 3.0F}, mode};
+        std::vector<Agent> agents(8);
+        const glm::vec3 middle = (world.minimum + world.maximum) * 0.5F;
+        const std::array positions{world.minimum, middle, middle,
+            glm::vec3{std::nextafter(middle.x, world.maximum.x), middle.y, middle.z},
+            glm::vec3{std::nextafter(middle.x, world.minimum.x), middle.y, middle.z},
+            glm::vec3{std::nextafter(world.maximum.x, world.minimum.x), 2.9F, 2.9F},
+            glm::vec3{-4.9F, -0.9F, 2.1F}, glm::vec3{4.9F, -0.9F, 2.1F}};
+        for (std::size_t i = 0; i < agents.size(); ++i) {
+            agents[i].position = positions[i];
+            agents[i].velocity = {static_cast<float>(i), 1.0F, -1.0F};
+        }
+        emergences::sim::cpu::SpatialHash grid;
+        grid.rebuild(agents, world, 20.0F);
+        std::vector<Neighbor> cached;
+        Alignment alignment;
+        Cohesion cohesion;
+        Separation separation;
+        for (std::size_t self = 0; self < agents.size(); ++self) {
+            grid.query(self, 20.0F, cached);
+            auto uncached = cached;
+            for (auto& neighbor : uncached) neighbor.displacement.reset();
+            for (Rule* rule : std::array<Rule*, 3>{&alignment, &cohesion, &separation}) {
+                for (const float radius : {0.0F, 0.1F, 2.0F, 5.0F, 20.0F}) {
+                    rule->setRadius(radius);
+                    require(rule->steer(agents[self], cached, world) ==
+                                rule->steer(agents[self], uncached, world),
+                            "Cached and legacy neighbors must produce exactly equal steering");
+                }
+            }
+        }
+    }
+}
+
 void defaultsAndDirections() {
     const World world;
     Agent self;
@@ -62,11 +102,11 @@ void defaultsAndDirections() {
     Alignment alignment;
     Cohesion cohesion;
     Separation separation;
-    require(alignment.name() == "Alignment" && alignment.weight() == 1.0F && alignment.radius() == 5.0F,
+    require(alignment.name() == "Alignment" && alignment.weight() == 0.45F && alignment.radius() == 5.0F,
             "Alignment defaults must match the scenario");
-    require(cohesion.name() == "Cohesion" && cohesion.weight() == 0.6F && cohesion.radius() == 5.0F,
+    require(cohesion.name() == "Cohesion" && cohesion.weight() == 0.11F && cohesion.radius() == 6.0F,
             "Cohesion defaults must match the scenario");
-    require(separation.name() == "Separation" && separation.weight() == 1.5F && separation.radius() == 2.0F,
+    require(separation.name() == "Separation" && separation.weight() == 2.0F && separation.radius() == 2.0F,
             "Separation defaults must match the scenario");
     require(near(alignment.steer(self, neighbors, world), {-1.0F, 1.0F, 1.0F}),
             "Alignment must steer toward average neighbor velocity relative to self velocity");
@@ -237,6 +277,7 @@ void invalidParameters() {
 int main() {
     try {
         defaultsAndDirections();
+        cachedAndUncachedNeighborsAgree();
         independentRadii();
         periodicSeams();
         fractionalRadiusBoundary();

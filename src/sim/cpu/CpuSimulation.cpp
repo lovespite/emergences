@@ -122,16 +122,23 @@ void CpuSimulation::step(float dt) {
             if (rule->weight() == 0.0F) {
                 continue;
             }
-            ruleNeighbors_.clear();
-            const double radiusSquared = static_cast<double>(rule->radius()) * rule->radius();
-            if (rule->radius() > 0.0F) {
-                for (const Neighbor& neighbor : neighbors_) {
-                    if (neighbor.distanceSquared <= radiusSquared) {
-                        ruleNeighbors_.push_back(neighbor);
+            std::span<const Neighbor> ruleNeighbors = neighbors_;
+            // The maximum-radius query already has exactly these neighbors.
+            // Smaller rules still receive a precisely filtered view, including
+            // custom rules which do not filter their input themselves.
+            if (rule->radius() != maximumRadius) {
+                ruleNeighbors_.clear();
+                const double radiusSquared = static_cast<double>(rule->radius()) * rule->radius();
+                if (rule->radius() > 0.0F) {
+                    for (const Neighbor& neighbor : neighbors_) {
+                        if (neighbor.distanceSquared <= radiusSquared) {
+                            ruleNeighbors_.push_back(neighbor);
+                        }
                     }
                 }
+                ruleNeighbors = ruleNeighbors_;
             }
-            const glm::vec3 steering = rule->steer(self, ruleNeighbors_, world_);
+            const glm::vec3 steering = rule->steer(self, ruleNeighbors, world_);
             if (!finite(steering)) {
                 throw std::invalid_argument("Rule returned a nonfinite acceleration");
             }

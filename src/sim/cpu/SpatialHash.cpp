@@ -99,6 +99,10 @@ void SpatialHash::query(std::size_t selfIndex, float radius, std::vector<Neighbo
     }
 
     const double radiusSquared = static_cast<double>(radius) * radius;
+    const glm::dvec3 selfPosition{agents_[selfIndex].position};
+    const glm::dvec3 extent = glm::dvec3{world_.maximum} - glm::dvec3{world_.minimum};
+    const glm::dvec3 halfExtent = extent * 0.5;
+    const bool wrap = world_.boundary == BoundaryMode::Wrap;
     for (int x = 0; x < sizes[0]; ++x) {
         for (int y = 0; y < sizes[1]; ++y) {
             for (int z = 0; z < sizes[2]; ++z) {
@@ -112,19 +116,28 @@ void SpatialHash::query(std::size_t selfIndex, float radius, std::vector<Neighbo
                         continue;
                     }
                     double distanceSquared = 0.0;
+                    glm::vec3 displacement{0.0F};
                     for (glm::length_t axis = 0; axis < 3; ++axis) {
-                        double delta = static_cast<double>(agents_[index].position[axis]) -
-                                       agents_[selfIndex].position[axis];
-                        if (world_.boundary == BoundaryMode::Wrap) {
-                            const double extent = static_cast<double>(world_.maximum[axis]) -
-                                                  world_.minimum[axis];
-                            delta = std::remainder(delta, extent);
+                        double delta = static_cast<double>(agents_[index].position[axis]) - selfPosition[axis];
+                        if (wrap) {
+                            // Rebuild guarantees positions inside one period:
+                            // at most one subtraction is needed. Strict ties
+                            // preserve the sign at exactly half a period.
+                            if (delta > halfExtent[axis]) delta -= extent[axis];
+                            else if (delta < -halfExtent[axis]) {
+                                delta += extent[axis];
+                                // Match remainder's signed zero as well when
+                                // extreme world scales round delta to -extent.
+                                if (delta == 0.0) delta = -0.0;
+                            }
                         }
                         distanceSquared += delta * delta;
+                        displacement[axis] = static_cast<float>(delta);
                     }
                     if (distanceSquared <= radiusSquared) {
-                        // Exact filtering uses doubles even for subnormal radii.
-                        output.push_back({&agents_[index], distanceSquared});
+                        // Filter in double precision; rules reuse the float
+                        // displacement without repeating checked world math.
+                        output.push_back({&agents_[index], distanceSquared, displacement});
                     }
                 }
             }

@@ -6,7 +6,7 @@ namespace emergences::scenarios::boids {
 
 class Cohesion final : public sim::Rule {
 public:
-    explicit Cohesion(float weight = 0.6F, float radius = 5.0F);
+    explicit Cohesion(float weight = 0.11F, float radius = 6.0F);
 
     [[nodiscard]] glm::vec3 steer(const sim::Agent& self,
                                   std::span<const sim::Neighbor> neighbors,

@@ -14,7 +14,8 @@ glm::vec3 Cohesion::steer(const sim::Agent& self,
     std::size_t count = 0;
     for (const sim::Neighbor& neighbor : neighbors) {
         if (detail::withinRadius(neighbor, radius_)) {
-            displacementSum += world.displacement(self.position, neighbor.agent->position);
+            displacementSum += neighbor.displacement ? *neighbor.displacement
+                : world.displacement(self.position, neighbor.agent->position);
             ++count;
         }
     }

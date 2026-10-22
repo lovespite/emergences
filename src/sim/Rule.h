@@ -2,6 +2,7 @@
 
 #include <span>
 #include <string_view>
+#include <optional>
 
 #include "sim/Agent.h"
 #include "sim/World.h"
@@ -17,6 +18,10 @@ struct Neighbor {
     // Keep the query's precision so a second radius filter cannot round an
     // included boundary neighbor outside the rule's neighborhood.
     double distanceSquared;
+    // Optional self-to-neighbor minimum-image vector computed by the query.
+    // Valid for the same self, positions and world as distanceSquared, rounded
+    // exactly like World::displacement. Hand-built neighbors may omit it.
+    std::optional<glm::vec3> displacement{};
 };
 
 // CPU rule implementation. GPU rules will share parameters and carry a matching

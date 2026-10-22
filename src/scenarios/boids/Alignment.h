@@ -6,7 +6,7 @@ namespace emergences::scenarios::boids {
 
 class Alignment final : public sim::Rule {
 public:
-    explicit Alignment(float weight = 1.0F, float radius = 5.0F);
+    explicit Alignment(float weight = 0.45F, float radius = 5.0F);
 
     [[nodiscard]] glm::vec3 steer(const sim::Agent& self,
                                   std::span<const sim::Neighbor> neighbors,

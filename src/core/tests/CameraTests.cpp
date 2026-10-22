@@ -167,6 +167,89 @@ void invalidAndExtremeInputs() {
     requireBasis(camera);
 }
 
+void screenRaysAndPicking() {
+    Camera camera;
+    const auto centerRay = camera.screenRay(0.5F, 0.5F, 16.0F / 9.0F);
+    require(centerRay.has_value(), "Center cursor must produce a ray");
+    require(near(centerRay->origin, camera.position()), "Picking ray must begin at the eye");
+    require(near(centerRay->direction, glm::normalize(-camera.position())),
+            "Center ray must face the camera target");
+    const auto cornerRay = camera.screenRay(0.0F, 0.0F, 1.0F);
+    require(cornerRay.has_value(), "Viewport corner must produce a ray");
+    require(glm::dot(cornerRay->direction, camera.right()) < 0.0F &&
+                glm::dot(cornerRay->direction, camera.up()) > 0.0F,
+            "Top-left cursor must point left and up in camera space");
+    require(std::abs(glm::length(cornerRay->direction) - 1.0F) < 0.0001F,
+            "Picking ray direction must be normalized");
+
+    const glm::vec3 horizontalNormal{0.0F, 1.0F, 0.0F};
+    const auto centerHit = camera.screenToPlane(0.5F, 0.5F, 1.0F, {}, horizontalNormal);
+    require(centerHit && near(*centerHit, {}), "Center cursor must hit the horizontal world origin");
+    for (const float scale : {std::numeric_limits<float>::min(), 5.0F,
+                              std::numeric_limits<float>::max()}) {
+        const auto hit = camera.screenToPlane(0.5F, 0.5F, 1.0F, {}, horizontalNormal * scale);
+        require(hit && near(*hit, {}), "Plane normal scale must not affect picking");
+    }
+
+    camera.orbit(110.0F, 50.0F);
+    camera.pan(80.0F, -20.0F, 720.0F);
+    camera.zoom(2.0F);
+    for (const float aspect : {0.5F, 1.0F, 16.0F / 9.0F}) {
+        for (const glm::vec3 point : {glm::vec3{-4.0F, 0.0F, 6.0F},
+                                      glm::vec3{2.0F, 0.0F, -3.0F}}) {
+            const auto ndc = project(camera, point, aspect);
+            const auto hit = camera.screenToPlane(
+                (ndc.x + 1.0F) * 0.5F, (ndc.y + 1.0F) * 0.5F,
+                aspect, {}, horizontalNormal);
+            require(hit && near(*hit, point),
+                    "Picking must invert the Vulkan projection after orbit, pan, and zoom");
+        }
+    }
+    // Check the full viewport against the image plane, including clamped aspects.
+    for (const float aspect : {0.001F, 0.5F, 2.0F, 200.0F}) {
+        for (const float x : {0.0F, 0.5F, 1.0F}) {
+            for (const float y : {0.0F, 0.5F, 1.0F}) {
+                const glm::vec3 forward = glm::cross(camera.up(), camera.right());
+                const auto hit = camera.screenToPlane(
+                    x, y, aspect, camera.position() + forward * 10.0F, forward);
+                require(hit.has_value(), "Every viewport ray must hit a plane in front of the camera");
+                const auto ndc = project(camera, *hit, aspect);
+                require(std::abs(ndc.x - (2.0F * x - 1.0F)) < 0.001F &&
+                            std::abs(ndc.y - (2.0F * y - 1.0F)) < 0.001F,
+                        "Picking and rendering must agree across the viewport");
+            }
+        }
+    }
+}
+
+void invalidPickingInputs() {
+    Camera camera;
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float infinity = std::numeric_limits<float>::infinity();
+    for (const float value : {-1.0F, 1.01F, nan, infinity}) {
+        require(!camera.screenRay(value, 0.5F, 1.0F), "Invalid cursor X must be rejected");
+        require(!camera.screenRay(0.5F, value, 1.0F), "Invalid cursor Y must be rejected");
+    }
+    for (const float aspect : {0.0F, -1.0F, nan, infinity}) {
+        require(!camera.screenRay(0.5F, 0.5F, aspect), "Invalid picking aspect must be rejected");
+    }
+    const glm::vec3 forward = glm::normalize(-camera.position());
+    require(!camera.screenToPlane(0.5F, 0.5F, 1.0F, {}, {}), "Zero plane normal must be rejected");
+    require(!camera.screenToPlane(0.5F, 0.5F, 1.0F, {}, camera.right()),
+            "Parallel ray must not report a hit");
+    require(!camera.screenToPlane(0.5F, 0.5F, 1.0F,
+                                 camera.position() - forward * 10.0F, forward),
+            "Plane behind the eye must not report a hit");
+    require(!camera.screenToPlane(0.5F, 0.5F, 1.0F, {nan, 0.0F, 0.0F}, forward),
+            "Nonfinite plane point must be rejected");
+    require(!camera.screenToPlane(0.5F, 0.5F, 1.0F, {}, {0.0F, infinity, 0.0F}),
+            "Nonfinite plane normal must be rejected");
+    require(!camera.screenToPlane(nan, 0.5F, 1.0F, {}, forward),
+            "Invalid cursor must not report a plane hit");
+    const auto eyeHit = camera.screenToPlane(0.5F, 0.5F, 1.0F, camera.position(), forward);
+    require(eyeHit && near(*eyeHit, camera.position()), "A plane through the eye may hit at distance zero");
+}
+
 } // namespace
 
 int main() {
@@ -175,6 +258,8 @@ int main() {
         orbitAndZoom();
         panAndReset();
         invalidAndExtremeInputs();
+        screenRaysAndPicking();
+        invalidPickingInputs();
         std::cout << "Camera tests passed\n";
         return EXIT_SUCCESS;
     } catch (const std::exception& error) {

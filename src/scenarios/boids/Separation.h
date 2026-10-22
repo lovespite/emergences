@@ -6,7 +6,7 @@ namespace emergences::scenarios::boids {
 
 class Separation final : public sim::Rule {
 public:
-    explicit Separation(float weight = 1.5F, float radius = 2.0F);
+    explicit Separation(float weight = 2.0F, float radius = 2.0F);
 
     [[nodiscard]] glm::vec3 steer(const sim::Agent& self,
                                   std::span<const sim::Neighbor> neighbors,
