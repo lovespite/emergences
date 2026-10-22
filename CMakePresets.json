@@ -1,0 +1,42 @@
+{
+  "version": 5,
+  "cmakeMinimumRequired": { "major": 3, "minor": 24, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "vs2022",
+      "displayName": "Visual Studio 2022 x64",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "toolset": "host=x64",
+      "binaryDir": "${sourceDir}/build-host-x64",
+      "environment": {
+        "PROCESSOR_ARCHITECTURE": "AMD64"
+      },
+      "cacheVariables": {
+        "EMERGENCES_BUILD_APP": "ON",
+        "BUILD_TESTING": "ON"
+      }
+    },
+    {
+      "name": "vs2022-sim",
+      "displayName": "Simulation interfaces only (no Vulkan SDK required)",
+      "inherits": "vs2022",
+      "binaryDir": "${sourceDir}/build/sim-only",
+      "cacheVariables": { "EMERGENCES_BUILD_APP": "OFF" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "debug", "configurePreset": "vs2022", "configuration": "Debug" },
+    { "name": "release", "configurePreset": "vs2022", "configuration": "Release" },
+    { "name": "sim-debug", "configurePreset": "vs2022-sim", "configuration": "Debug" }
+  ],
+  "testPresets": [
+    {
+      "name": "debug",
+      "configurePreset": "vs2022",
+      "configuration": "Debug",
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error" }
+    }
+  ]
+}
