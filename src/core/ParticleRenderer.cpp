@@ -20,13 +20,20 @@ ParticleRenderer::ParticleRenderer(const Context& context, std::filesystem::path
 }
 ParticleRenderer::~ParticleRenderer() = default;
 
-void ParticleRenderer::configure(VkRenderPass pass) {
+void ParticleRenderer::configure(VkRenderPass pass, VkSampleCountFlagBits samples) {
+    // Alpha-to-coverage also smooths the shader-defined circle boundary.
+    const VkBool32 smoothDots = samples != VK_SAMPLE_COUNT_1_BIT ? VK_TRUE : VK_FALSE;
+    const VkSpecializationMapEntry entry{0, 0, sizeof(smoothDots)};
+    const VkSpecializationInfo specialization{1, &entry, sizeof(smoothDots), &smoothDots};
     pipeline_ = std::make_unique<Pipeline>(context_, pass, PipelineOptions{
         .vertexShader = shaderDirectory_ / "particle.vert.spv",
         .fragmentShader = shaderDirectory_ / "particle.frag.spv",
         .descriptorLayout = descriptor_->layout(),
         .pushConstantBytes = sizeof(SceneView),
-        .depthTest = true});
+        .depthTest = true,
+        .samples = samples,
+        .alphaToCoverage = smoothDots == VK_TRUE,
+        .fragmentSpecialization = &specialization});
 }
 
 void ParticleRenderer::draw(VkCommandBuffer commands, std::size_t frame,

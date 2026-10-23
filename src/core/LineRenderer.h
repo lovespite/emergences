@@ -24,7 +24,7 @@ public:
     LineRenderer(LineRenderer&&) = delete;
     LineRenderer& operator=(LineRenderer&&) = delete;
 
-    void configure(VkRenderPass renderPass);
+    void configure(VkRenderPass renderPass, VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT);
     void draw(VkCommandBuffer commands, const SceneView& view, bool showGrid, bool showBounds);
 
 private:

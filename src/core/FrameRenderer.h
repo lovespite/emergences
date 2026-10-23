@@ -36,6 +36,10 @@ public:
     // False means the window is minimized or acquisition requires recreation.
     [[nodiscard]] bool drawFrame(const Configure& configure, const Draw& draw);
     [[nodiscard]] std::size_t swapchainGeneration() const noexcept { return generation_; }
+    // Applied at the next drawFrame, outside any active render pass or UI frame.
+    void setAntialiasing(bool enabled) noexcept;
+    [[nodiscard]] VkSampleCountFlagBits sampleCount() const noexcept;
+    [[nodiscard]] VkSampleCountFlagBits supportedAntialiasingSampleCount() const noexcept;
 
 private:
     struct Frame {
@@ -61,6 +65,7 @@ private:
     std::size_t currentFrame_ = 0;
     std::size_t generation_ = 0;
     bool recreate_ = true;
+    bool antialiasing_ = false;
 };
 
 } // namespace emergences::core

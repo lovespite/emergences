@@ -58,6 +58,21 @@ FrameRenderer::FrameRenderer(const Context& context, const Window& window)
 
 FrameRenderer::~FrameRenderer() { cleanup(); }
 
+void FrameRenderer::setAntialiasing(bool enabled) noexcept {
+    if (antialiasing_ != enabled) {
+        antialiasing_ = enabled;
+        recreate_ = true;
+    }
+}
+
+VkSampleCountFlagBits FrameRenderer::sampleCount() const noexcept {
+    return swapchain_ ? swapchain_->sampleCount() : VK_SAMPLE_COUNT_1_BIT;
+}
+
+VkSampleCountFlagBits FrameRenderer::supportedAntialiasingSampleCount() const noexcept {
+    return swapchain_ ? swapchain_->supportedAntialiasingSampleCount() : VK_SAMPLE_COUNT_1_BIT;
+}
+
 void FrameRenderer::recreateSwapchain(std::pair<int, int> framebufferSize, const Configure& configure) {
     context_.waitIdle();
     // Reset recordings before destroying the objects they refer to.
@@ -65,7 +80,7 @@ void FrameRenderer::recreateSwapchain(std::pair<int, int> framebufferSize, const
     destroySwapchain();
     swapchain_ = std::make_unique<Swapchain>(context_, VkExtent2D{
         static_cast<std::uint32_t>(framebufferSize.first),
-        static_cast<std::uint32_t>(framebufferSize.second)});
+        static_cast<std::uint32_t>(framebufferSize.second)}, antialiasing_);
     configure(swapchain_->renderPass(), static_cast<std::uint32_t>(swapchain_->imageCount()));
 
     renderFinished_.resize(swapchain_->imageCount(), VK_NULL_HANDLE);
@@ -137,7 +152,7 @@ bool FrameRenderer::drawFrame(const Configure& configure, const Draw& draw) {
     if (presented != VK_ERROR_OUT_OF_DATE_KHR && presented != VK_SUBOPTIMAL_KHR) {
         check(presented, "Presenting frame");
     }
-    recreate_ = acquired == VK_SUBOPTIMAL_KHR || presented == VK_SUBOPTIMAL_KHR ||
+    recreate_ = recreate_ || acquired == VK_SUBOPTIMAL_KHR || presented == VK_SUBOPTIMAL_KHR ||
                 presented == VK_ERROR_OUT_OF_DATE_KHR;
     currentFrame_ = (currentFrame_ + 1) % frames_.size();
     return presented != VK_ERROR_OUT_OF_DATE_KHR;

@@ -50,7 +50,7 @@ class ParticleRenderer final {
 public:
     ParticleRenderer(const Context&, std::filesystem::path shaderDirectory);
     ~ParticleRenderer();
-    void configure(VkRenderPass);
+    void configure(VkRenderPass, VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT);
     void draw(VkCommandBuffer, std::size_t frame, std::span<const Particle>, const SceneView&);
 private:
     const Context& context_;

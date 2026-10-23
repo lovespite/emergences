@@ -47,7 +47,8 @@ ImGuiLayer::ImGuiLayer(const Context& context, const Window& window) : context_(
 
 ImGuiLayer::~ImGuiLayer() { cleanup(); }
 
-void ImGuiLayer::configure(VkRenderPass renderPass, std::uint32_t imageCount) {
+void ImGuiLayer::configure(VkRenderPass renderPass, std::uint32_t imageCount,
+                           VkSampleCountFlagBits samples) {
     if (renderPass == VK_NULL_HANDLE || imageCount < 2) {
         throw std::invalid_argument("ImGui requires a render pass and at least two swapchain images");
     }
@@ -68,7 +69,7 @@ void ImGuiLayer::configure(VkRenderPass renderPass, std::uint32_t imageCount) {
     info.RenderPass = renderPass;
     info.MinImageCount = 2;
     info.ImageCount = imageCount;
-    info.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+    info.MSAASamples = samples;
     info.CheckVkResultFn = checkImGuiVulkanResult;
 
     try {

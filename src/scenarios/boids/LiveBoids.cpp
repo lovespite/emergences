@@ -34,6 +34,7 @@ struct Controls {
     float size = 0.45F;
     bool grid = true;
     bool bounds = true;
+    bool antialiasing = false;
     bool cursor = false;
     int cursorMode = 0;
     float radius = 8.0F;
@@ -60,7 +61,7 @@ bool slider(const char* label, float& value, float minimum, float maximum) {
 }
 
 Actions drawPanel(BoidsScene& scene, Controls& controls, core::Camera& camera,
-                  const core::Context& context) {
+                  const core::Context& context, const core::FrameRenderer& renderer) {
     Actions actions;
     auto& simulation = scene.simulation();
     ImGui::SetNextWindowPos(ImVec2(18, 18), ImGuiCond_FirstUseEver);
@@ -145,6 +146,12 @@ Actions drawPanel(BoidsScene& scene, Controls& controls, core::Camera& camera,
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("View")) {
+            const auto samples = renderer.supportedAntialiasingSampleCount();
+            ImGui::BeginDisabled(samples == VK_SAMPLE_COUNT_1_BIT);
+            ImGui::Checkbox("Anti-aliasing (MSAA)", &controls.antialiasing);
+            ImGui::EndDisabled();
+            if (samples == VK_SAMPLE_COUNT_1_BIT) ImGui::TextDisabled("MSAA unavailable on this device.");
+            else ImGui::TextDisabled("MSAA: %ux when enabled", static_cast<unsigned>(samples));
             ImGui::Combo("Shape", &controls.shape, "Arrows\0Dots\0");
             slider("Size", controls.size, 0.1F, 1.5F);
             ImGui::Combo("Color", &controls.color, "Direction\0Speed\0Density\0Solid\0");
@@ -332,17 +339,24 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest) 
             const double elapsed = std::chrono::duration<double>(now - previous).count();
             previous = now;
             if (smokeTest && now >= deadline) throw std::runtime_error("Boids smoke test timed out");
+            if (smokeTest) controls.antialiasing = (presentedFrames >= 2 && presentedFrames < 16) || presentedFrames >= 20;
+            renderer.setAntialiasing(controls.antialiasing);
             const bool presented = renderer.drawFrame(
                 [&](VkRenderPass pass, std::uint32_t imageCount) {
-                    particles.configure(pass);
-                    lines.configure(pass);
-                    ui.configure(pass, imageCount);
+                    particles.configure(pass, renderer.sampleCount());
+                    lines.configure(pass, renderer.sampleCount());
+                    ui.configure(pass, imageCount, renderer.sampleCount());
                 },
                 [&](VkCommandBuffer commands, VkExtent2D extent, std::size_t frame) {
                     ui.beginFrame();
+                    if (smokeTest) {
+                        require(renderer.sampleCount() == (controls.antialiasing
+                            ? renderer.supportedAntialiasingSampleCount() : VK_SAMPLE_COUNT_1_BIT),
+                            "Boids MSAA toggle did not select the expected sample count");
+                    }
                     Actions actions;
                     if (smokeTest) smokeSettings(presentedFrames, scene, controls, camera, actions);
-                    const auto panelActions = drawPanel(scene, controls, camera, context);
+                    const auto panelActions = drawPanel(scene, controls, camera, context, renderer);
                     actions.reset |= panelActions.reset;
                     actions.step |= panelActions.step;
                     actions.skipElapsed |= panelActions.skipElapsed;
@@ -471,7 +485,7 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest) 
                 "Boids smoke test closed before all checks completed");
         std::cout << "Boids smoke test passed: " << presentedFrames << " presented frames, "
                   << generations << " swapchain generations, counts 0/1/257/4096/96/512/2048, "
-                     "fixed steps/pause/reset/rules/limits/boundaries/colors/cursor/dense budget, 0 validation errors.\n";
+                     "fixed steps/pause/reset/rules/limits/boundaries/colors/cursor/dense budget/MSAA toggles, 0 validation errors.\n";
     }
     return 0;
 }

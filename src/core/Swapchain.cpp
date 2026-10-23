@@ -72,38 +72,35 @@ VkCompositeAlphaFlagBitsKHR chooseCompositeAlpha(VkCompositeAlphaFlagsKHR suppor
     throw std::runtime_error("The window surface has no supported composite alpha mode");
 }
 
-VkFormat chooseDepthFormat(VkPhysicalDevice device, VkExtent2D extent) {
-    constexpr std::array candidates{
-        VK_FORMAT_D32_SFLOAT,
-        VK_FORMAT_D24_UNORM_S8_UINT,
-        VK_FORMAT_D32_SFLOAT_S8_UINT,
-        VK_FORMAT_D16_UNORM,
-    };
-    for (const auto candidate : candidates) {
-        VkFormatProperties properties{};
-        vkGetPhysicalDeviceFormatProperties(device, candidate, &properties);
-        if ((properties.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) == 0) {
-            continue;
-        }
-        VkImageFormatProperties imageProperties{};
-        const auto result = vkGetPhysicalDeviceImageFormatProperties(
-            device, candidate, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
-            VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, 0, &imageProperties);
-        if (result == VK_ERROR_FORMAT_NOT_SUPPORTED) {
-            continue;
-        }
-        check(result, "Querying depth attachment image support");
-        if (extent.width <= imageProperties.maxExtent.width &&
-            extent.height <= imageProperties.maxExtent.height &&
-            (imageProperties.sampleCounts & VK_SAMPLE_COUNT_1_BIT) != 0) {
-            return candidate;
-        }
+VkSampleCountFlags supportedImageSamples(VkPhysicalDevice device, VkFormat format,
+                                        VkExtent2D extent, VkImageUsageFlags usage,
+                                        VkFormatFeatureFlags requiredFeatures) {
+    VkFormatProperties properties{};
+    vkGetPhysicalDeviceFormatProperties(device, format, &properties);
+    if ((properties.optimalTilingFeatures & requiredFeatures) != requiredFeatures) {
+        return 0;
     }
-    throw std::runtime_error("No supported depth attachment format matches the swapchain extent");
+    VkImageFormatProperties imageProperties{};
+    const auto result = vkGetPhysicalDeviceImageFormatProperties(
+        device, format, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
+        usage, 0, &imageProperties);
+    if (result == VK_ERROR_FORMAT_NOT_SUPPORTED) {
+        return 0;
+    }
+    check(result, "Querying attachment image support");
+    if (extent.width > imageProperties.maxExtent.width ||
+        extent.height > imageProperties.maxExtent.height) {
+        return 0;
+    }
+    return imageProperties.sampleCounts;
 }
 
-std::uint32_t findDepthMemoryType(const VkPhysicalDeviceMemoryProperties& properties,
-                                 std::uint32_t allowedTypes) {
+bool hasStencil(VkFormat format) {
+    return format == VK_FORMAT_D24_UNORM_S8_UINT || format == VK_FORMAT_D32_SFLOAT_S8_UINT;
+}
+
+std::uint32_t findAttachmentMemoryType(const VkPhysicalDeviceMemoryProperties& properties,
+                                      std::uint32_t allowedTypes) {
     for (std::uint32_t i = 0; i < properties.memoryTypeCount; ++i) {
         const auto flags = properties.memoryTypes[i].propertyFlags;
         if ((allowedTypes & (1U << i)) != 0 &&
@@ -112,16 +109,26 @@ std::uint32_t findDepthMemoryType(const VkPhysicalDeviceMemoryProperties& proper
             return i;
         }
     }
-    throw std::runtime_error("No device-local memory is available for a depth attachment");
+    throw std::runtime_error("No device-local memory is available for an attachment");
 }
 
 } // namespace
 
-Swapchain::Swapchain(const Context& context, VkExtent2D framebufferExtent)
+Swapchain::Swapchain(const Context& context, VkExtent2D framebufferExtent, bool antialiasing)
     : context_(context) {
     try {
         createSwapchain(framebufferExtent);
-        createDepthAttachments();
+        chooseAttachmentFormats(antialiasing);
+        if (sampleCount_ != VK_SAMPLE_COUNT_1_BIT) {
+            createAttachments(colorAttachments_, format_, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                              VK_IMAGE_ASPECT_COLOR_BIT);
+        }
+        VkImageAspectFlags depthAspect = VK_IMAGE_ASPECT_DEPTH_BIT;
+        if (hasStencil(depthFormat_)) {
+            depthAspect |= VK_IMAGE_ASPECT_STENCIL_BIT;
+        }
+        createAttachments(depthAttachments_, depthFormat_,
+                          VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, depthAspect);
         createRenderPass();
         createFramebuffers();
     } catch (...) {
@@ -218,72 +225,117 @@ void Swapchain::createSwapchain(VkExtent2D framebufferExtent) {
     }
 }
 
-void Swapchain::createDepthAttachments() {
-    depthFormat_ = chooseDepthFormat(context_.physicalDevice(), extent_);
+void Swapchain::chooseAttachmentFormats(bool antialiasing) {
+    VkPhysicalDeviceProperties properties{};
+    vkGetPhysicalDeviceProperties(context_.physicalDevice(), &properties);
+    const VkSampleCountFlags colorSamples = supportedImageSamples(
+        context_.physicalDevice(), format_, extent_, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+        VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT) & properties.limits.framebufferColorSampleCounts;
+
+    constexpr std::array depthCandidates{
+        VK_FORMAT_D32_SFLOAT,
+        VK_FORMAT_D24_UNORM_S8_UINT,
+        VK_FORMAT_D32_SFLOAT_S8_UINT,
+        VK_FORMAT_D16_UNORM,
+    };
+    VkFormat antialiasingDepthFormat = VK_FORMAT_UNDEFINED;
+    for (const auto candidate : depthCandidates) {
+        VkSampleCountFlags depthSamples = supportedImageSamples(
+            context_.physicalDevice(), candidate, extent_,
+            VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+            VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) & properties.limits.framebufferDepthSampleCounts;
+        if (hasStencil(candidate)) {
+            depthSamples &= properties.limits.framebufferStencilSampleCounts;
+        }
+        if ((depthSamples & VK_SAMPLE_COUNT_1_BIT) == 0) {
+            continue;
+        }
+        if (depthFormat_ == VK_FORMAT_UNDEFINED) {
+            // Keep the original format preference when antialiasing is disabled.
+            depthFormat_ = candidate;
+        }
+        const auto commonSamples = colorSamples & depthSamples;
+        for (const auto samples : {VK_SAMPLE_COUNT_4_BIT, VK_SAMPLE_COUNT_2_BIT}) {
+            if ((commonSamples & samples) != 0 && samples > supportedAntialiasingSampleCount_) {
+                supportedAntialiasingSampleCount_ = samples;
+                antialiasingDepthFormat = candidate;
+                break;
+            }
+        }
+    }
+    if (depthFormat_ == VK_FORMAT_UNDEFINED) {
+        throw std::runtime_error("No supported depth attachment format matches the swapchain extent");
+    }
+    if (antialiasing && supportedAntialiasingSampleCount_ != VK_SAMPLE_COUNT_1_BIT) {
+        sampleCount_ = supportedAntialiasingSampleCount_;
+        depthFormat_ = antialiasingDepthFormat;
+    }
+}
+
+void Swapchain::createAttachments(std::vector<Attachment>& attachments, VkFormat format,
+                                 VkImageUsageFlags usage, VkImageAspectFlags aspect) {
     VkPhysicalDeviceMemoryProperties memoryProperties{};
     vkGetPhysicalDeviceMemoryProperties(context_.physicalDevice(), &memoryProperties);
 
     // Allocate all slots before creating handles so constructor cleanup can
     // release every partially initialized attachment after any later failure.
-    depthAttachments_.resize(imageViews_.size());
-    for (auto& depth : depthAttachments_) {
+    attachments.resize(imageViews_.size());
+    for (auto& attachment : attachments) {
         VkImageCreateInfo imageInfo{};
         imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
         imageInfo.imageType = VK_IMAGE_TYPE_2D;
-        imageInfo.format = depthFormat_;
+        imageInfo.format = format;
         imageInfo.extent = {extent_.width, extent_.height, 1};
         imageInfo.mipLevels = 1;
         imageInfo.arrayLayers = 1;
-        imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+        imageInfo.samples = sampleCount_;
         imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-        imageInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+        imageInfo.usage = usage;
         imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        check(vkCreateImage(context_.device(), &imageInfo, nullptr, &depth.image),
-              "Creating a depth attachment image");
+        check(vkCreateImage(context_.device(), &imageInfo, nullptr, &attachment.image),
+              "Creating an attachment image");
 
         VkMemoryRequirements requirements{};
-        vkGetImageMemoryRequirements(context_.device(), depth.image, &requirements);
+        vkGetImageMemoryRequirements(context_.device(), attachment.image, &requirements);
         VkMemoryAllocateInfo allocation{};
         allocation.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         allocation.allocationSize = requirements.size;
-        allocation.memoryTypeIndex = findDepthMemoryType(memoryProperties, requirements.memoryTypeBits);
-        check(vkAllocateMemory(context_.device(), &allocation, nullptr, &depth.memory),
-              "Allocating depth attachment memory");
-        check(vkBindImageMemory(context_.device(), depth.image, depth.memory, 0),
-              "Binding depth attachment memory");
+        allocation.memoryTypeIndex = findAttachmentMemoryType(memoryProperties, requirements.memoryTypeBits);
+        check(vkAllocateMemory(context_.device(), &allocation, nullptr, &attachment.memory),
+              "Allocating attachment memory");
+        check(vkBindImageMemory(context_.device(), attachment.image, attachment.memory, 0),
+              "Binding attachment memory");
 
         VkImageViewCreateInfo viewInfo{};
         viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        viewInfo.image = depth.image;
+        viewInfo.image = attachment.image;
         viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        viewInfo.format = depthFormat_;
-        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-        if (depthFormat_ == VK_FORMAT_D24_UNORM_S8_UINT ||
-            depthFormat_ == VK_FORMAT_D32_SFLOAT_S8_UINT) {
-            viewInfo.subresourceRange.aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
-        }
+        viewInfo.format = format;
+        viewInfo.subresourceRange.aspectMask = aspect;
         viewInfo.subresourceRange.levelCount = 1;
         viewInfo.subresourceRange.layerCount = 1;
-        check(vkCreateImageView(context_.device(), &viewInfo, nullptr, &depth.view),
-              "Creating a depth attachment image view");
+        check(vkCreateImageView(context_.device(), &viewInfo, nullptr, &attachment.view),
+              "Creating an attachment image view");
     }
 }
 
 void Swapchain::createRenderPass() {
+    const bool multisampled = sampleCount_ != VK_SAMPLE_COUNT_1_BIT;
     VkAttachmentDescription colorAttachment{};
     colorAttachment.format = format_;
-    colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    colorAttachment.samples = sampleCount_;
     colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    colorAttachment.storeOp = multisampled ? VK_ATTACHMENT_STORE_OP_DONT_CARE : VK_ATTACHMENT_STORE_OP_STORE;
     colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    colorAttachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    colorAttachment.finalLayout = multisampled ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+                                              : VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 
     VkAttachmentDescription depthAttachment{};
     depthAttachment.format = depthFormat_;
-    depthAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    depthAttachment.samples = sampleCount_;
     depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     depthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
@@ -291,17 +343,31 @@ void Swapchain::createRenderPass() {
     depthAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
+    VkAttachmentDescription resolveAttachment{};
+    resolveAttachment.format = format_;
+    resolveAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    resolveAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    resolveAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    resolveAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    resolveAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    resolveAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    resolveAttachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
     VkAttachmentReference colorReference{};
     colorReference.attachment = 0;
     colorReference.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     VkAttachmentReference depthReference{};
     depthReference.attachment = 1;
     depthReference.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    VkAttachmentReference resolveReference{};
+    resolveReference.attachment = 2;
+    resolveReference.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     VkSubpassDescription subpass{};
     subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
     subpass.colorAttachmentCount = 1;
     subpass.pColorAttachments = &colorReference;
     subpass.pDepthStencilAttachment = &depthReference;
+    subpass.pResolveAttachments = multisampled ? &resolveReference : nullptr;
 
     VkSubpassDependency dependency{};
     dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
@@ -317,10 +383,10 @@ void Swapchain::createRenderPass() {
                                VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
     dependency.dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
 
-    const std::array attachments{colorAttachment, depthAttachment};
+    const std::array attachments{colorAttachment, depthAttachment, resolveAttachment};
     VkRenderPassCreateInfo info{};
     info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    info.attachmentCount = static_cast<std::uint32_t>(attachments.size());
+    info.attachmentCount = multisampled ? 3U : 2U;
     info.pAttachments = attachments.data();
     info.subpassCount = 1;
     info.pSubpasses = &subpass;
@@ -331,13 +397,18 @@ void Swapchain::createRenderPass() {
 }
 
 void Swapchain::createFramebuffers() {
+    const bool multisampled = sampleCount_ != VK_SAMPLE_COUNT_1_BIT;
     framebuffers_.resize(imageViews_.size(), VK_NULL_HANDLE);
     for (std::size_t i = 0; i < imageViews_.size(); ++i) {
-        const std::array attachments{imageViews_[i], depthAttachments_[i].view};
+        const std::array attachments{
+            multisampled ? colorAttachments_[i].view : imageViews_[i],
+            depthAttachments_[i].view,
+            imageViews_[i],
+        };
         VkFramebufferCreateInfo info{};
         info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
         info.renderPass = renderPass_;
-        info.attachmentCount = static_cast<std::uint32_t>(attachments.size());
+        info.attachmentCount = multisampled ? 3U : 2U;
         info.pAttachments = attachments.data();
         info.width = extent_.width;
         info.height = extent_.height;
@@ -358,18 +429,20 @@ void Swapchain::cleanup() noexcept {
         vkDestroyRenderPass(context_.device(), renderPass_, nullptr);
         renderPass_ = VK_NULL_HANDLE;
     }
-    for (const auto& depth : depthAttachments_) {
-        if (depth.view != VK_NULL_HANDLE) {
-            vkDestroyImageView(context_.device(), depth.view, nullptr);
+    for (auto* attachments : {&colorAttachments_, &depthAttachments_}) {
+        for (const auto& attachment : *attachments) {
+            if (attachment.view != VK_NULL_HANDLE) {
+                vkDestroyImageView(context_.device(), attachment.view, nullptr);
+            }
+            if (attachment.image != VK_NULL_HANDLE) {
+                vkDestroyImage(context_.device(), attachment.image, nullptr);
+            }
+            if (attachment.memory != VK_NULL_HANDLE) {
+                vkFreeMemory(context_.device(), attachment.memory, nullptr);
+            }
         }
-        if (depth.image != VK_NULL_HANDLE) {
-            vkDestroyImage(context_.device(), depth.image, nullptr);
-        }
-        if (depth.memory != VK_NULL_HANDLE) {
-            vkFreeMemory(context_.device(), depth.memory, nullptr);
-        }
+        attachments->clear();
     }
-    depthAttachments_.clear();
     for (const auto imageView : imageViews_) {
         if (imageView != VK_NULL_HANDLE) {
             vkDestroyImageView(context_.device(), imageView, nullptr);

@@ -98,6 +98,7 @@ Pipeline::Pipeline(const Context& context, VkRenderPass renderPass, const Pipeli
         stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
         stages[1].module = fragment.handle();
         stages[1].pName = "main";
+        stages[1].pSpecializationInfo = options.fragmentSpecialization;
 
         // The smoke shader derives its three vertices from gl_VertexIndex.
         VkPipelineVertexInputStateCreateInfo vertexInput{};
@@ -125,7 +126,8 @@ Pipeline::Pipeline(const Context& context, VkRenderPass renderPass, const Pipeli
 
         VkPipelineMultisampleStateCreateInfo multisampling{};
         multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-        multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+        multisampling.rasterizationSamples = options.samples;
+        multisampling.alphaToCoverageEnable = options.alphaToCoverage ? VK_TRUE : VK_FALSE;
 
         VkPipelineDepthStencilStateCreateInfo depthStencil{};
         depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;

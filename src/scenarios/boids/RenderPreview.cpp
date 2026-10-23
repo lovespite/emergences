@@ -25,6 +25,7 @@ struct Preview {
     bool animate = true;
     bool grid = true;
     bool bounds = true;
+    bool antialiasing = false;
     std::vector<core::Particle> particles;
 
     void generate() {
@@ -54,7 +55,8 @@ struct Preview {
     }
 };
 
-void drawPanel(Preview& preview, core::Camera& camera, const core::Context& context) {
+void drawPanel(Preview& preview, core::Camera& camera, const core::Context& context,
+               const core::FrameRenderer& renderer) {
     ImGui::SetNextWindowPos(ImVec2(18, 18), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(310, 0), ImGuiCond_Always);
     ImGui::Begin("Emergences", nullptr, ImGuiWindowFlags_NoResize);
@@ -64,6 +66,12 @@ void drawPanel(Preview& preview, core::Camera& camera, const core::Context& cont
     ImGui::SliderInt("Particles", &preview.count, 0, 20000);
     preview.count = std::clamp(preview.count, 0, 20000);
     ImGui::Combo("Shape", &preview.mode, "Arrows\0Dots\0");
+    const auto samples = renderer.supportedAntialiasingSampleCount();
+    ImGui::BeginDisabled(samples == VK_SAMPLE_COUNT_1_BIT);
+    ImGui::Checkbox("Anti-aliasing (MSAA)", &preview.antialiasing);
+    ImGui::EndDisabled();
+    if (samples == VK_SAMPLE_COUNT_1_BIT) ImGui::TextDisabled("MSAA unavailable on this device.");
+    else ImGui::TextDisabled("MSAA: %ux when enabled", static_cast<unsigned>(samples));
     ImGui::SliderFloat("Size", &preview.scale, 0.15F, 1.8F, "%.2f");
     preview.scale = std::clamp(preview.scale, 0.15F, 1.8F);
     ImGui::Combo("Color", &preview.colorMode, "Direction\0Speed\0Solid\0");
@@ -135,16 +143,22 @@ int BoidsApp::runPreview(const std::filesystem::path& shaderDirectory, bool smok
             const float dt = std::clamp(std::chrono::duration<float>(now - previous).count(), 0.0F, 0.05F);
             previous = now;
             if (smokeTest && now >= deadline) throw std::runtime_error("Particle smoke test timed out");
+            if (smokeTest) preview.antialiasing = (presentedFrames >= 2 && presentedFrames < 16) || presentedFrames >= 20;
+            renderer.setAntialiasing(preview.antialiasing);
             const bool presented = renderer.drawFrame(
                 [&](VkRenderPass pass, std::uint32_t imageCount) {
-                    particles.configure(pass);
-                    lines.configure(pass);
-                    ui.configure(pass, imageCount);
+                    particles.configure(pass, renderer.sampleCount());
+                    lines.configure(pass, renderer.sampleCount());
+                    ui.configure(pass, imageCount, renderer.sampleCount());
                 },
                 [&](VkCommandBuffer commands, VkExtent2D extent, std::size_t frame) {
                     ui.beginFrame();
+                    if (smokeTest && renderer.sampleCount() != (preview.antialiasing
+                            ? renderer.supportedAntialiasingSampleCount() : VK_SAMPLE_COUNT_1_BIT)) {
+                        throw std::runtime_error("Particle MSAA toggle did not select the expected sample count");
+                    }
                     if (smokeTest) smokeSettings(presentedFrames, preview, camera);
-                    drawPanel(preview, camera, context);
+                    drawPanel(preview, camera, context, renderer);
                     if (!ui.wantsMouse()) {
                         const auto& io = ImGui::GetIO();
                         if (ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
@@ -192,7 +206,7 @@ int BoidsApp::runPreview(const std::filesystem::path& shaderDirectory, bool smok
         }
         std::cout << "Particle smoke test passed: " << presentedFrames << " presented frames, "
                   << generations << " swapchain generations, counts 0/1/257/8192/96/2048, "
-                     "arrows/dots, camera/grid/UI, 0 validation errors.\n";
+                     "arrows/dots, camera/grid/UI, MSAA toggles, 0 validation errors.\n";
     }
     return 0;
 }

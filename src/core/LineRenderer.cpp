@@ -65,7 +65,7 @@ LineRenderer::LineRenderer(const Context& context, std::filesystem::path shaderD
 
 LineRenderer::~LineRenderer() = default;
 
-void LineRenderer::configure(VkRenderPass renderPass) {
+void LineRenderer::configure(VkRenderPass renderPass, VkSampleCountFlagBits samples) {
     constexpr std::array bindings{
         VkVertexInputBindingDescription{0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX}};
     constexpr std::array attributes{
@@ -78,7 +78,8 @@ void LineRenderer::configure(VkRenderPass renderPass) {
         .bindings = bindings,
         .attributes = attributes,
         .pushConstantBytes = sizeof(SceneView),
-        .depthTest = true});
+        .depthTest = true,
+        .samples = samples});
 }
 
 void LineRenderer::draw(VkCommandBuffer commands, const SceneView& view,

@@ -19,6 +19,9 @@ struct PipelineOptions {
     VkDescriptorSetLayout descriptorLayout = VK_NULL_HANDLE;
     std::uint32_t pushConstantBytes = 0;
     bool depthTest = false;
+    VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
+    bool alphaToCoverage = false;
+    const VkSpecializationInfo* fragmentSpecialization = nullptr;
 };
 
 // The Context must outlive this pipeline. Finish submitted uses before destruction.

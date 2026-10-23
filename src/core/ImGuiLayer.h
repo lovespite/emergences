@@ -25,7 +25,8 @@ public:
 
     // Call after the device is idle, outside a frame, before recording into a
     // replacement render pass. Reconfiguration keeps the GLFW backend alive.
-    void configure(VkRenderPass renderPass, std::uint32_t imageCount);
+    void configure(VkRenderPass renderPass, std::uint32_t imageCount,
+                   VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT);
     void shutdownRenderer() noexcept;
 
     void beginFrame();
