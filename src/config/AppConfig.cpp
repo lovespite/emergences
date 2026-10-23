@@ -65,6 +65,7 @@ std::vector<Field> fields(Settings& settings) {
         {"scenarios.boids.cursor.plane_height", &b.cursorPlaneHeight, -39.0F, 39.0F},
         {"scenarios.ants.count", &a.count, 0.0F, 20000.0F},
         {"scenarios.ants.seed", &a.seed, 0.0F, static_cast<float>(std::numeric_limits<int>::max())},
+        {"scenarios.ants.obstacle_count", &a.obstacleCount, 0.0F, 48.0F},
         {"scenarios.ants.paused", &a.paused},
         {"scenarios.ants.speed", &a.speed, 0.1F, 20.0F},
         {"scenarios.ants.sensor_distance", &a.sensorDistance, 0.1F, 10.0F},

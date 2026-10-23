@@ -44,6 +44,7 @@ struct AntSettings {
     bool showFoodPheromone = true;
     float agentSize = 0.5F;
     float foodSpawnInterval = 10.0F;
+    int obstacleCount = 24;
     bool operator==(const AntSettings&) const = default;
 };
 

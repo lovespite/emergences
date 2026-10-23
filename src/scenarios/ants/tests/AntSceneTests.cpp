@@ -19,6 +19,7 @@ using scenarios::ants::AntParameters;
 using scenarios::ants::AntScene;
 using scenarios::ants::Enemy;
 using scenarios::ants::FoodSource;
+using scenarios::ants::Obstacle;
 
 void require(bool condition, const char* message) {
     if (!condition) {
@@ -58,6 +59,10 @@ bool sameEnemy(const Enemy& left, const Enemy& right) {
            left.radius == right.radius;
 }
 
+bool sameObstacle(const Obstacle& left, const Obstacle& right) {
+    return left.position == right.position && left.radius == right.radius;
+}
+
 bool sameParameters(const AntParameters& left, const AntParameters& right) {
     return left.speed == right.speed && left.sensorDistance == right.sensorDistance &&
            left.sensorAngle == right.sensorAngle && left.turnSpeed == right.turnSpeed &&
@@ -71,6 +76,8 @@ struct State {
     std::vector<std::uint8_t> carrying;
     std::vector<FoodSource> food;
     std::vector<Enemy> enemies;
+    std::vector<Obstacle> obstacles;
+    std::size_t obstacleCount;
     std::vector<float> homePheromone;
     std::vector<float> foodPheromone;
     std::size_t delivered;
@@ -81,7 +88,8 @@ struct State {
 
 State state(const AntScene& scene) {
     return {copy(scene.agents()), copy(scene.carryingFood()), copy(scene.foodSources()),
-            copy(scene.enemies()), copy(scene.homePheromone()), copy(scene.foodPheromone()),
+            copy(scene.enemies()), copy(scene.obstacles()), scene.obstacleCount(),
+            copy(scene.homePheromone()), copy(scene.foodPheromone()),
             scene.deliveredFood(), scene.totalGeneratedFood(), scene.secondsUntilFoodSpawn(),
             scene.totalSteps()};
 }
@@ -96,6 +104,10 @@ void requireSameState(const State& expected, const AntScene& actual) {
     require(std::equal(expected.enemies.begin(), expected.enemies.end(), actual.enemies().begin(),
                        actual.enemies().end(), sameEnemy),
             "Hostile creature positions and velocities must replay exactly");
+    require(expected.obstacleCount == actual.obstacleCount() &&
+                std::equal(expected.obstacles.begin(), expected.obstacles.end(), actual.obstacles().begin(),
+                           actual.obstacles().end(), sameObstacle),
+            "Terrain settings and obstacle placement must replay exactly");
     require(std::equal(expected.carrying.begin(), expected.carrying.end(), actual.carryingFood().begin(),
                        actual.carryingFood().end()),
             "Carried food must replay exactly");
@@ -138,7 +150,57 @@ void requirePlanarPosition(const glm::vec3& position) {
     require(std::isfinite(position.x) && std::isfinite(position.y) && std::isfinite(position.z) &&
                 position.y == 0.0F && std::abs(position.x) <= AntScene::WorldHalfExtent &&
                 std::abs(position.z) <= AntScene::WorldHalfExtent,
-            "Ants, food, and hostile creatures must stay finite and inside the XZ world");
+            "Ants, food, hostile creatures, and obstacles must stay finite and inside the XZ world");
+}
+
+void requireClearOfTerrain(const AntScene& scene, const glm::vec3& position, float radius,
+                          const char* message) {
+    for (const auto& obstacle : scene.obstacles()) {
+        require(glm::length(position - obstacle.position) + 1.0e-4F >= radius + obstacle.radius,
+                message);
+    }
+}
+
+void requireTerrainClearance(const AntScene& scene) {
+    for (const auto& ant : scene.agents()) {
+        requireClearOfTerrain(scene, ant.position, AntScene::AntRadius,
+                              "Ant bodies must not penetrate solid terrain");
+    }
+    for (const auto& enemy : scene.enemies()) {
+        requireClearOfTerrain(scene, enemy.position, enemy.radius,
+                              "Hostile creatures must not penetrate solid terrain");
+    }
+    for (const auto& food : scene.foodSources()) {
+        requireClearOfTerrain(scene, food.position, food.radius,
+                              "Initial and replenished food patches must remain outside terrain");
+    }
+}
+
+std::vector<std::size_t> terrainCells(const AntScene& scene) {
+    constexpr float cellSize = 2.0F * AntScene::WorldHalfExtent /
+                               static_cast<float>(AntScene::GridResolution - 1);
+    std::vector<std::size_t> cells;
+    for (std::size_t z = 0; z < AntScene::GridResolution; ++z) {
+        for (std::size_t x = 0; x < AntScene::GridResolution; ++x) {
+            const glm::vec3 position{static_cast<float>(x) * cellSize - AntScene::WorldHalfExtent,
+                                     0.0F,
+                                     static_cast<float>(z) * cellSize - AntScene::WorldHalfExtent};
+            if (std::any_of(scene.obstacles().begin(), scene.obstacles().end(), [&](const Obstacle& obstacle) {
+                    const auto delta = position - obstacle.position;
+                    return glm::dot(delta, delta) < obstacle.radius * obstacle.radius;
+                })) {
+                cells.push_back(z * AntScene::GridResolution + x);
+            }
+        }
+    }
+    return cells;
+}
+
+void requireEmptyTerrainCells(const AntScene& scene, std::span<const std::size_t> cells) {
+    for (const auto index : cells) {
+        require(scene.homePheromone()[index] == 0.0F && scene.foodPheromone()[index] == 0.0F,
+                "Neither deposition nor diffusion may put pheromones inside solid terrain");
+    }
 }
 
 void requireBoundedWorld(const AntScene& scene) {
@@ -167,6 +229,28 @@ void requireBoundedWorld(const AntScene& scene) {
                     std::isfinite(enemy.radius) && enemy.radius > 0.0F,
                 "Hostile creatures must have finite planar velocities and valid radii");
     }
+    require(scene.obstacles().size() == scene.obstacleCount() &&
+                scene.obstacleCount() <= AntScene::MaxObstacles,
+            "The generated terrain must match the selected obstacle count");
+    for (std::size_t index = 0; index < scene.obstacles().size(); ++index) {
+        const auto& obstacle = scene.obstacles()[index];
+        requirePlanarPosition(obstacle.position);
+        require(std::isfinite(obstacle.radius) && obstacle.radius >= AntScene::MinObstacleRadius &&
+                    obstacle.radius <= AntScene::MaxObstacleRadius &&
+                    std::abs(obstacle.position.x) + obstacle.radius <= AntScene::WorldHalfExtent &&
+                    std::abs(obstacle.position.z) + obstacle.radius <= AntScene::WorldHalfExtent,
+                "Every obstacle must fit inside the world and the supported size range");
+        require(glm::length(obstacle.position - scene.nestPosition()) >=
+                    obstacle.radius + scene.nestRadius(),
+                "Terrain must leave the nest unobstructed");
+        for (std::size_t other = 0; other < index; ++other) {
+            const auto& previous = scene.obstacles()[other];
+            require(glm::length(obstacle.position - previous.position) + 1.0e-4F >=
+                        obstacle.radius + previous.radius + 4.0F,
+                    "Generated obstacles must leave passages wide enough for hostile creatures");
+        }
+    }
+    requireTerrainClearance(scene);
     requireBoundedField(scene.homePheromone());
     requireBoundedField(scene.foodPheromone());
 }
@@ -179,7 +263,7 @@ void deterministicWorldAndReplay() {
     require(!scene.foodSources().empty() && !scene.enemies().empty(),
             "A colony world must contain food and hostile creatures");
     require(emptyField(scene.homePheromone()) && emptyField(scene.foodPheromone()),
-            "Pheromones start empty; only food and hostile creatures are randomly generated");
+            "Pheromones start empty in the randomly generated world");
     requireBoundedWorld(scene);
     const State initial = state(scene);
     requireSameState(initial, matching);
@@ -204,10 +288,102 @@ void deterministicWorldAndReplay() {
     require(!std::equal(initial.enemies.begin(), initial.enemies.end(), different.enemies().begin(),
                         different.enemies().end(), sameEnemy),
             "Different seeds must generate different hostile creature positions");
+    require(!std::equal(initial.obstacles.begin(), initial.obstacles.end(), different.obstacles().begin(),
+                        different.obstacles().end(), sameObstacle),
+            "Different seeds must generate different terrain");
     scene.setPaused(true);
     scene.randomize(43);
     require(scene.seed() == 43 && scene.paused(), "Randomization must select the seed and retain pause");
     requireSameState(state(different), scene);
+}
+
+void terrainGenerationAndControls() {
+    AntScene scene{16, 29};
+    require(scene.obstacleCount() == AntScene::DefaultObstacleCount && !scene.obstacles().empty(),
+            "A new ant world must enable its default random terrain");
+    ticks(scene, 2);
+    const State beforeUnchanged = state(scene);
+    scene.setObstacleCount(scene.obstacleCount());
+    requireSameState(beforeUnchanged, scene);
+
+    auto parameters = scene.parameters();
+    parameters.speed = 12.0F;
+    parameters.foodSpawnInterval = 3.0F;
+    scene.setParameters(parameters);
+    scene.setPaused(true);
+    scene.setObstacleCount(0);
+    require(scene.obstacleCount() == 0 && scene.obstacles().empty() && scene.paused() &&
+                scene.totalSteps() == 0 && scene.secondsUntilFoodSpawn() == 3.0 &&
+                sameParameters(parameters, scene.parameters()),
+            "Disabling terrain must reset the world while retaining pause and colony parameters");
+    requireBoundedWorld(scene);
+    require(scene.singleStep(), "A world with no terrain must still simulate");
+    scene.setObstacleCount(AntScene::MaxObstacles);
+    require(scene.obstacleCount() == AntScene::MaxObstacles && scene.totalSteps() == 0 && scene.paused(),
+            "The maximum obstacle count must be supported without changing pause state");
+    requireBoundedWorld(scene);
+    const State maximumTerrain = state(scene);
+    requireInvalid([&] { scene.setObstacleCount(AntScene::MaxObstacles + 1); },
+                   "Terrain counts above the supported maximum must be rejected");
+    requireInvalid([&] { scene.setObstacleCount(std::numeric_limits<std::size_t>::max()); },
+                   "Overflow-sized terrain counts must be rejected");
+    requireSameState(maximumTerrain, scene);
+    require(scene.singleStep(), "A world with maximum terrain must still simulate");
+    scene.reset();
+    requireSameState(maximumTerrain, scene);
+    require(scene.paused() && sameParameters(parameters, scene.parameters()),
+            "Reset must retain terrain controls, pause, and colony parameters");
+    scene.setCount(8);
+    require(scene.obstacleCount() == AntScene::MaxObstacles,
+            "Changing the population must retain the selected terrain count");
+    scene.randomize(30);
+    AntScene matching{8, 30};
+    matching.setParameters(parameters);
+    matching.setObstacleCount(AntScene::MaxObstacles);
+    requireSameState(state(matching), scene);
+    require(scene.paused(), "Regenerating terrain with a new seed must retain pause");
+
+    for (const std::uint32_t seed : {0U, 1U, 2U, 7U, 42U, 71U, 12345U, 4294967295U}) {
+        AntScene generated{0, seed};
+        generated.setObstacleCount(AntScene::MaxObstacles);
+        requireBoundedWorld(generated);
+        require(std::any_of(generated.obstacles().begin(), generated.obstacles().end(), [](const Obstacle& obstacle) {
+                    return obstacle.radius > 6.0F;
+                }), "Terrain must include rocks larger than the former 4.5-unit radius limit");
+    }
+}
+
+void terrainMovementAndPheromones() {
+    for (const std::uint32_t seed : {42U, 314U}) {
+        AntScene scene{160, seed};
+        scene.setObstacleCount(AntScene::MaxObstacles);
+        auto parameters = scene.parameters();
+        parameters.speed = 30.0F;
+        parameters.turnSpeed = 0.0F;
+        parameters.wander = 0.0F;
+        parameters.foodSpawnInterval = 1.0F;
+        parameters.depositRate = 30.0F;
+        parameters.diffusion = seed == 42U ? 10.0F : 0.0F;
+        parameters.evaporation = 0.0F;
+        scene.setParameters(parameters);
+        const auto blockedCells = terrainCells(scene);
+        require(!blockedCells.empty(), "Terrain must occupy cells in the pheromone grid");
+        const auto initialSupply = scene.totalGeneratedFood();
+        const auto initialObstacles = copy(scene.obstacles());
+        for (int tick = 0; tick < 1440; ++tick) {
+            ticks(scene, 1);
+            requireTerrainClearance(scene);
+            if ((tick + 1) % 120 == 0) {
+                requireBoundedWorld(scene);
+                requireEmptyTerrainCells(scene, blockedCells);
+            }
+        }
+        require(scene.totalGeneratedFood() > initialSupply && mass(scene.homePheromone()) > 0.0,
+                "Terrain collision checks must exercise replenished food and active pheromone trails");
+        require(std::equal(initialObstacles.begin(), initialObstacles.end(), scene.obstacles().begin(),
+                           scene.obstacles().end(), sameObstacle),
+                "Terrain must remain fixed while ants and hostile creatures move");
+    }
 }
 
 void framePartitioning() {
@@ -537,6 +713,8 @@ void foragingAndLongRunBounds() {
 int main() {
     try {
         deterministicWorldAndReplay();
+        terrainGenerationAndControls();
+        terrainMovementAndPheromones();
         framePartitioning();
         clockAndBudgets();
         populationsAndParameters();
@@ -544,7 +722,7 @@ int main() {
         periodicFoodLifecycle();
         replenishmentReplayAndCapacity();
         foragingAndLongRunBounds();
-        std::cout << "Ant scene tests passed (seeded worlds, replay, controls, trails, food, and bounds)\n";
+        std::cout << "Ant scene tests passed (seeded worlds, terrain, replay, controls, trails, food, and bounds)\n";
         return EXIT_SUCCESS;
     } catch (const std::exception& error) {
         std::cerr << "Ant scene test failed: " << error.what() << '\n';

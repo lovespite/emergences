@@ -69,6 +69,7 @@ void missingFileCreatesDefaults(const std::filesystem::path& directory) {
             "Enums must use symbolic names");
     require(text.find("app.scenario = boids\n") != std::string::npos &&
                 text.find("scenarios.ants.seed = 12345\n") != std::string::npos &&
+                text.find("scenarios.ants.obstacle_count = 24\n") != std::string::npos &&
                 text.find("scenarios.ants.food_spawn_interval = 10\n") != std::string::npos,
             "Existing users must retain Boids while new ant settings receive defaults");
     require(text.find("view.fullscreen = off\n") != std::string::npos,
@@ -184,7 +185,7 @@ void completeRoundTripAndComments(const std::filesystem::path& directory) {
     s.boids = {99999, false, true, 0.123456789F, 14.5F, 4.9F, 0.5F, 3.1F, 7.0F,
                8.0F, 14.0F, 59.0F, true, true, true, 19.5F, 99.9F, -38.0F};
     s.ants = {19999, 2147483647, true, 19.5F, 9.5F, 1.45F, 11.5F, 7.5F,
-              19.5F, 2.9F, 7.9F, false, false, 1.25F, 119.5F};
+              19.5F, 2.9F, 7.9F, false, false, 1.25F, 119.5F, 47};
     s.view = {true, false, false, false, false, 1, 3, 1.25F};
     s.camera = {-1000.0F, 1000.0F, 123.456789F, -2.0F, -0.9F, 1999.5F};
     s.preview = {19999, false, 2, 1.75F};
@@ -196,8 +197,9 @@ void completeRoundTripAndComments(const std::filesystem::path& directory) {
             "Unknown settings must survive verbatim");
     require(text.find("app.scenario = ants\n") != std::string::npos &&
                 text.find("scenarios.ants.seed = 2147483647\n") != std::string::npos &&
+                text.find("scenarios.ants.obstacle_count = 47\n") != std::string::npos &&
                 text.find("scenarios.ants.food_spawn_interval = 119.5\n") != std::string::npos,
-            "Ant scene selection, full signed seed range, and food interval must save exactly");
+            "Ant scene selection, seed, obstacle count, and food interval must save exactly");
     require(text.find("  view.fullscreen = on # display preference\n") != std::string::npos &&
                 text.find("view.fullscreen = on ; duplicate is updated too\n") != std::string::npos,
             "Known keys must update while retaining comments and indentation");
@@ -227,6 +229,10 @@ void antSettingsValidation(const std::filesystem::path& directory) {
                 "scenarios.ants.seed = 2147483647\n"
                 "scenarios.ants.seed = -1\n"
                 "scenarios.ants.seed = 2147483648\n"
+                "scenarios.ants.obstacle_count = 32\n"
+                "scenarios.ants.obstacle_count = -1\n"
+                "scenarios.ants.obstacle_count = 49\n"
+                "scenarios.ants.obstacle_count = 2.5\n"
                 "scenarios.ants.speed = 0\n"
                 "scenarios.ants.sensor_distance = 10.1\n"
                 "scenarios.ants.sensor_angle = 1.6\n"
@@ -251,13 +257,15 @@ void antSettingsValidation(const std::filesystem::path& directory) {
     expected.scenario = 1;
     expected.ants.count = 7000;
     expected.ants.seed = 2147483647;
+    expected.ants.obstacleCount = 32;
     expected.ants.foodSpawnInterval = 17.25F;
     require(config.settings() == expected,
             "Invalid ant settings must preserve the last valid values and defaults");
-    require(config.warnings().size() == 23, "Every invalid ant field needs a diagnostic");
+    require(config.warnings().size() == 26, "Every invalid ant field needs a diagnostic");
     auto& settings = config.settings();
     settings.ants.seed = 0;
     settings.ants.count = 0;
+    settings.ants.obstacleCount = 0;
     require(config.save(), "Zero seed and an empty ant world must be valid");
     ConfigFile reloaded(path);
     require(reloaded.settings() == settings && reloaded.warnings().empty(),
@@ -269,6 +277,12 @@ void antSettingsValidation(const std::filesystem::path& directory) {
     settings.scenario = 2;
     require(!config.save() && read(path) == saved, "Unknown runtime scenes must not replace the file");
     settings.scenario = 1;
+    for (const auto invalid : {-1, 49}) {
+        settings.ants.obstacleCount = invalid;
+        require(!config.save() && read(path) == saved,
+                "Invalid runtime obstacle counts must not replace the file");
+    }
+    settings.ants.obstacleCount = 0;
     for (const auto invalid : {0.0F, 120.1F, std::numeric_limits<float>::quiet_NaN(),
                                std::numeric_limits<float>::infinity()}) {
         settings.ants.foodSpawnInterval = invalid;
@@ -281,6 +295,13 @@ void antSettingsValidation(const std::filesystem::path& directory) {
         ConfigFile boundary(path);
         require(boundary.settings() == settings && boundary.warnings().empty(),
                 "Both food interval limits must round trip without warnings");
+    }
+    for (const auto count : {0, 48}) {
+        settings.ants.obstacleCount = count;
+        require(config.save(), "Both obstacle count limits must save");
+        ConfigFile boundary(path);
+        require(boundary.settings() == settings && boundary.warnings().empty(),
+                "Both obstacle count limits must round trip without warnings");
     }
 }
 

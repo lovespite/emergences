@@ -32,6 +32,7 @@ void applyAntSettings(AntScene& scene, const config::AntSettings& settings) {
         settings.turnSpeed, settings.wander, settings.depositRate, settings.evaporation, settings.diffusion,
         settings.foodSpawnInterval});
     scene.setCount(static_cast<std::size_t>(settings.count));
+    scene.setObstacleCount(static_cast<std::size_t>(settings.obstacleCount));
     scene.randomize(static_cast<std::uint32_t>(settings.seed));
     scene.setPaused(settings.paused);
 }
@@ -40,6 +41,7 @@ void captureAntSettings(const AntScene& scene, config::AntSettings& settings) {
     const auto& parameters = scene.parameters();
     settings.count = static_cast<int>(scene.count());
     settings.seed = static_cast<int>(scene.seed());
+    settings.obstacleCount = static_cast<int>(scene.obstacleCount());
     settings.paused = scene.paused();
     settings.speed = parameters.speed;
     settings.sensorDistance = parameters.sensorDistance;
@@ -111,7 +113,18 @@ AntPanelActions drawAntControls(AntScene& scene, config::AntSettings& settings,
                 scene.randomize(static_cast<std::uint32_t>(settings.seed));
                 actions.skipElapsed = true;
             }
-            ImGui::TextWrapped("Regenerates food and roaming hostiles. Reset replays the current seed. Changing the ant count also restarts the world.");
+            ImGui::TextWrapped("Regenerates terrain, food and hostiles. Reset replays the current seed. Changing ant or obstacle counts also restarts the world.");
+            int obstacleCount = static_cast<int>(scene.obstacleCount());
+            ImGui::SetNextItemWidth(190.0F);
+            if (ImGui::SliderInt("Obstacles", &obstacleCount, 0, static_cast<int>(AntScene::MaxObstacles),
+                                 "%d", ImGuiSliderFlags_AlwaysClamp)) {
+                scene.setObstacleCount(static_cast<std::size_t>(std::clamp(obstacleCount, 0,
+                    static_cast<int>(AntScene::MaxObstacles))));
+                actions.skipElapsed = true;
+            }
+            ImGui::Text("Rocks: %zu / %zu | Max radius: %.1f", scene.obstacles().size(), AntScene::MaxObstacles,
+                static_cast<double>(AntScene::MaxObstacleRadius));
+            ImGui::TextWrapped("Stone obstacles block movement and pheromones. Ants and hostiles steer around them. Set 0 for open ground.");
             auto parameters = scene.parameters();
             ImGui::SetNextItemWidth(190.0F);
             if (slider("Food interval (s)", parameters.foodSpawnInterval, 1.0F, 120.0F)) {
@@ -126,7 +139,8 @@ AntPanelActions drawAntControls(AntScene& scene, config::AntSettings& settings,
             ImGui::TextColored(ImVec4(0.95F, 0.72F, 0.22F, 1), "GOLD / Nest");
             ImGui::TextColored(ImVec4(0.35F, 0.95F, 0.35F, 1), "GREEN / Food");
             ImGui::TextColored(ImVec4(1.0F, 0.22F, 0.20F, 1), "RED / Hostile creatures");
-            ImGui::TextWrapped("Ants explore, collect food and return to the nest. Hostiles roam the ground; nearby ants flee and may detour around them.");
+            ImGui::TextColored(ImVec4(0.50F, 0.54F, 0.56F, 1), "STONE / Terrain obstacles");
+            ImGui::TextWrapped("Ants explore, collect food and return to the nest. Hostiles pursue dense ant groups within 40 units, finding routes around rocks. They roam when no group is nearby and keep clear of the nest. Nearby ants flee.");
             ImGui::TextWrapped("Pheromones start empty. Exploring ants leave home trails; returning ants leave food trails. Trails diffuse and evaporate over time.");
             ImGui::EndTabItem();
         }
@@ -182,7 +196,7 @@ void makeAntParticles(const AntScene& scene, const config::AntSettings& settings
     constexpr float cellSize = 2.0F * AntScene::WorldHalfExtent / static_cast<float>(resolution - 1);
     const auto home = scene.homePheromone();
     const auto food = scene.foodPheromone();
-    environment.reserve(resolution * resolution + 256);
+    environment.reserve(resolution * resolution + 256 + scene.obstacles().size() * 3);
     for (std::size_t z = 0; z < resolution; ++z) {
         for (std::size_t x = 0; x < resolution; ++x) {
             const auto index = z * resolution + x;
@@ -195,6 +209,15 @@ void makeAntParticles(const AntScene& scene, const config::AntSettings& settings
                 0.02F, -AntScene::WorldHalfExtent + static_cast<float>(z) * cellSize},
                 cellSize * 1.5F, color);
         }
+    }
+    for (const auto& obstacle : scene.obstacles()) {
+        // The outer ground disc matches the collision boundary; raised inset discs shade the stone.
+        dot(environment, obstacle.position + glm::vec3{0, 0.08F, 0}, obstacle.radius * 2.0F,
+            {0.23F, 0.27F, 0.28F});
+        dot(environment, obstacle.position + glm::vec3{0, 0.16F, 0}, obstacle.radius * 1.75F,
+            {0.36F, 0.40F, 0.41F});
+        dot(environment, obstacle.position + glm::vec3{0, 0.24F, 0}, obstacle.radius * 1.30F,
+            {0.47F, 0.50F, 0.49F});
     }
     const auto nest = scene.nestPosition();
     dot(environment, nest + glm::vec3{0, 0.12F, 0}, scene.nestRadius() * 1.5F, {0.30F, 0.18F, 0.06F});

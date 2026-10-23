@@ -592,6 +592,9 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
                         if (presentedFrames == 2) antScene.setCount(1);
                         if (presentedFrames == 3) antScene.setCount(257);
                         if (presentedFrames == 4) antScene.setCount(1500);
+                        if (presentedFrames == 5) { antScene.setObstacleCount(0); actions.skipElapsed = true; }
+                        if (presentedFrames == 6) { antScene.setObstacleCount(ants::AntScene::MaxObstacles); actions.skipElapsed = true; }
+                        if (presentedFrames == 7) { antScene.setObstacleCount(ants::AntScene::DefaultObstacleCount); actions.skipElapsed = true; }
                         if (presentedFrames == 8) antScene.setPaused(true);
                         if (presentedFrames == 9) actions.step = true;
                         if (presentedFrames == 10) antScene.setPaused(false);
@@ -663,6 +666,15 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
                         if (antsSmokeTest) {
                             require(renderParticles.size() == antScene.count(), "Ant render count mismatch");
                             require(!antEnvironment.empty(), "Ant world objects were not rendered");
+                            require(antScene.obstacles().size() == antScene.obstacleCount(),
+                                "Ant terrain count mismatch");
+                            for (const auto& obstacle : antScene.obstacles()) {
+                                require(std::any_of(antEnvironment.begin(), antEnvironment.end(),
+                                    [&obstacle](const core::Particle& particle) {
+                                        return particle.position == obstacle.position + glm::vec3{0, 0.08F, 0} &&
+                                            particle.size == obstacle.radius * 2.0F;
+                                    }), "Obstacle rendering must match its collision footprint");
+                            }
                             if (antScene.paused() && !actions.step && !actions.reset)
                                 require(antScene.totalSteps() == stepsBefore, "Paused ants advanced");
                             if (actions.step) require(antScene.totalSteps() == stepsBefore + 1, "Ant single step failed");
@@ -683,7 +695,12 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
                         if (antsSmokeTest && !controls.panelVisible)
                             require(ImGui::GetDrawData()->TotalVtxCount == 0, "Hidden ant panel left UI commands");
                         antLines.draw(commands, view, controls.grid, controls.bounds);
+                        // Environmental circles use the same XZ ground plane as the simulation.
+                        view.right = {1, 0, 0, 0};
+                        view.up = {0, 0, 1, 0};
                         environmentParticles.draw(commands, frame, antEnvironment, view);
+                        view.right = glm::vec4(camera.right(), 0);
+                        view.up = glm::vec4(camera.up(), 0);
                         view.options = {controls.ants.agentSize, 2.0F, 0, 0};
                         particles.draw(commands, frame, renderParticles, view);
                         ui.record(commands);
@@ -858,7 +875,7 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
             observedFoodTrail && observedSceneSwitch,
             "Ant smoke test closed before all checks completed");
         std::cout << "Ant smoke test passed: " << presentedFrames << " frames, " << generations
-            << " swapchain generations, food/hostiles/trails, 0/1/257/1500 ants, pause/step/reset/seed, "
+            << " swapchain generations, food/hostiles/trails/terrain, 0/24/48 obstacles, 0/1/257/1500 ants, pause/step/reset/seed, "
                "scene switches/budget/MSAA/fullscreen/F1 panel, 0 validation errors.\n";
     }
     return 0;

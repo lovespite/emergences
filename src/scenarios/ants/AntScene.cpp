@@ -1,6 +1,7 @@
 #include "scenarios/ants/AntScene.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <numbers>
@@ -93,6 +94,7 @@ GridSample gridSample(const glm::vec3& position) {
 
 AntScene::AntScene(std::size_t count, std::uint32_t seed)
     : seed_{seed}, random_{seed},
+      blockedCells_(GridResolution * GridResolution, 0),
       foodPheromone_(GridResolution * GridResolution, 0.0F),
       homePheromone_(GridResolution * GridResolution, 0.0F),
       fieldScratch_(GridResolution * GridResolution, 0.0F) {
@@ -137,6 +139,18 @@ void AntScene::setCount(std::size_t count) {
 
 std::uint32_t AntScene::seed() const noexcept { return seed_; }
 
+std::size_t AntScene::obstacleCount() const noexcept { return obstacleCount_; }
+
+void AntScene::setObstacleCount(std::size_t count) {
+    if (count > MaxObstacles) {
+        throw std::invalid_argument("Obstacle count exceeds the 48 obstacle limit");
+    }
+    if (count != obstacleCount_) {
+        obstacleCount_ = count;
+        reset();
+    }
+}
+
 float AntScene::random(float minimum, float maximum) {
     const float unit = static_cast<float>(random_() >> 8U) / 16777216.0F;
     return minimum + (maximum - minimum) * unit;
@@ -147,6 +161,7 @@ void AntScene::reset() {
     foodSources_.clear();
     enemies_.clear();
     enemyHeadings_.clear();
+    enemyPursuits_.clear();
     clearPheromones();
     accumulator_ = 0.0;
     totalSteps_ = 0;
@@ -171,7 +186,12 @@ void AntScene::reset() {
         enemies_.push_back({direction(random(-Pi, Pi)) * random(34.0F, 66.0F),
                             direction(heading) * random(1.5F, 2.8F), random(1.2F, 1.8F)});
         enemyHeadings_.push_back(heading);
+        enemyPursuits_.push_back({{}, 0, glm::length(enemies_.back().velocity)});
     }
+    generateTerrain();
+    float navigationRadius = 0.0F;
+    for (const auto& enemy : enemies_) navigationRadius = std::max(navigationRadius, enemy.radius);
+    enemyPathfinder_.rebuild(obstacles_, navigationRadius + 0.1F);
 
     carryingFood_.assign(agents_.size(), 0);
     headings_.resize(agents_.size());
@@ -184,7 +204,7 @@ void AntScene::reset() {
         agents_[index].id = static_cast<std::uint32_t>(index);
         agents_[index].position = direction(heading) * radius;
         agents_[index].velocity = direction(heading) * parameters_.speed;
-        agents_[index].size = 0.42F;
+        agents_[index].size = AntRadius * 2.0F;
         agents_[index].color = SearchingColor;
     }
 }
@@ -264,6 +284,7 @@ std::span<const sim::Agent> AntScene::agents() const noexcept { return agents_; 
 std::span<const std::uint8_t> AntScene::carryingFood() const noexcept { return carryingFood_; }
 std::span<const FoodSource> AntScene::foodSources() const noexcept { return foodSources_; }
 std::span<const Enemy> AntScene::enemies() const noexcept { return enemies_; }
+std::span<const Obstacle> AntScene::obstacles() const noexcept { return obstacles_; }
 std::span<const float> AntScene::foodPheromone() const noexcept { return foodPheromone_; }
 std::span<const float> AntScene::homePheromone() const noexcept { return homePheromone_; }
 glm::vec3 AntScene::nestPosition() const noexcept { return {0.0F, 0.0F, 0.0F}; }
@@ -272,6 +293,141 @@ std::size_t AntScene::deliveredFood() const noexcept { return deliveredFood_; }
 std::size_t AntScene::totalGeneratedFood() const noexcept { return totalGeneratedFood_; }
 double AntScene::secondsUntilFoodSpawn() const noexcept {
     return std::max(0.0, nextFoodSpawnTime_ - elapsedSimulationSeconds());
+}
+
+void AntScene::generateTerrain() {
+    obstacles_.clear();
+    std::fill(blockedCells_.begin(), blockedCells_.end(), std::uint8_t{0});
+    if (obstacleCount_ == 0) return;
+
+    // A separate random stream keeps the colony and initial food unchanged when
+    // density changes. Larger rocks shrink next to existing neighbors to keep
+    // four world units of clearance for both ants and hostile creatures.
+    std::mt19937 terrainRandom{seed_ ^ 0xD1B54A35U};
+    const auto unit = [&terrainRandom] {
+        return static_cast<float>(terrainRandom() >> 8U) / 16777216.0F;
+    };
+    std::array<Obstacle, 100> candidates;
+    for (std::size_t index = 0; index < candidates.size(); ++index) {
+        candidates[index] = {{-67.5F + 15.0F * static_cast<float>(index % 10) + unit() * 2.0F - 1.0F,
+                               0.0F,
+                              -67.5F + 15.0F * static_cast<float>(index / 10) + unit() * 2.0F - 1.0F},
+                              MinObstacleRadius + unit() * (MaxObstacleRadius - MinObstacleRadius)};
+    }
+    for (std::size_t remaining = candidates.size(); remaining > 1; --remaining) {
+        std::swap(candidates[remaining - 1], candidates[terrainRandom() % remaining]);
+    }
+    for (auto candidate : candidates) {
+        for (const auto& obstacle : obstacles_) {
+            candidate.radius = std::min(candidate.radius,
+                glm::length(candidate.position - obstacle.position) - obstacle.radius - 4.0F);
+        }
+        if (glm::length(candidate.position - nestPosition()) < candidate.radius + nestRadius() + 7.0F)
+            continue;
+        const bool nearFood = std::any_of(foodSources_.begin(), foodSources_.end(), [&](const FoodSource& food) {
+            return glm::length(candidate.position - food.position) < candidate.radius + food.radius + 2.0F;
+        });
+        const bool nearEnemy = std::any_of(enemies_.begin(), enemies_.end(), [&](const Enemy& enemy) {
+            return glm::length(candidate.position - enemy.position) < candidate.radius + enemy.radius + 1.0F;
+        });
+        if (nearFood || nearEnemy) continue;
+        obstacles_.push_back(candidate);
+        if (obstacles_.size() == obstacleCount_) break;
+    }
+    // Sites remain at least 13 units apart, so even a 7-unit neighbor leaves
+    // room for a 2-unit rock and a 4-unit passage. The 100 candidates still
+    // accommodate 48 rocks after reserving nest, food and enemy spawn space.
+    for (std::size_t z = 0; z < GridResolution; ++z) {
+        for (std::size_t x = 0; x < GridResolution; ++x) {
+            const glm::vec3 position{-WorldHalfExtent + static_cast<float>(x) * CellSize, 0.0F,
+                                      -WorldHalfExtent + static_cast<float>(z) * CellSize};
+            blockedCells_[z * GridResolution + x] = terrainClear(position, 0.0F) ? 0 : 1;
+        }
+    }
+}
+
+bool AntScene::terrainClear(const glm::vec3& position, float radius) const noexcept {
+    for (const auto& obstacle : obstacles_) {
+        const auto delta = position - obstacle.position;
+        const float clearance = radius + obstacle.radius;
+        if (glm::dot(delta, delta) <= clearance * clearance) return false;
+    }
+    return true;
+}
+
+bool AntScene::clearPath(const glm::vec3& from, const glm::vec3& to, float radius) const noexcept {
+    const auto segment = to - from;
+    const float lengthSquared = glm::dot(segment, segment);
+    for (const auto& obstacle : obstacles_) {
+        const float fraction = lengthSquared > 1.0e-8F
+            ? std::clamp(glm::dot(obstacle.position - from, segment) / lengthSquared, 0.0F, 1.0F) : 0.0F;
+        const auto delta = from + segment * fraction - obstacle.position;
+        const float clearance = obstacle.radius + radius;
+        if (glm::dot(delta, delta) <= clearance * clearance) return false;
+    }
+    return true;
+}
+
+float AntScene::avoidTerrain(const glm::vec3& position, float heading, float radius,
+                            float speed, float maximumTurn, std::uint32_t id) const {
+    if (speed == 0.0F) return heading;
+    const auto forward = direction(heading);
+    const float lookAhead = std::clamp(speed * 0.5F, 1.5F, 8.0F);
+    const Obstacle* nearest = nullptr;
+    float nearestDistance = std::numeric_limits<float>::infinity();
+    for (const auto& obstacle : obstacles_) {
+        const auto offset = obstacle.position - position;
+        const float along = glm::dot(offset, forward);
+        if (along <= 0.0F) continue;
+        const float clearance = obstacle.radius + radius + 0.6F;
+        const auto closest = forward * std::min(along, lookAhead) - offset;
+        if (glm::dot(closest, closest) < clearance * clearance && along < nearestDistance) {
+            nearest = &obstacle;
+            nearestDistance = along;
+        }
+    }
+    if (nearest == nullptr) return heading;
+    const auto normal = glm::normalize(position - nearest->position);
+    glm::vec3 tangent{-normal.z, 0.0F, normal.x};
+    const float alignment = glm::dot(tangent, forward);
+    if (alignment < -1.0e-5F || (std::abs(alignment) <= 1.0e-5F && (id & 1U) != 0)) tangent = -tangent;
+    return turnToward(heading, angle(tangent + normal * 0.15F), std::max(maximumTurn, 6.0F * StepSeconds));
+}
+
+void AntScene::moveOnTerrain(glm::vec3& position, glm::vec3& velocity, float radius) const {
+    const float speed = glm::length(velocity);
+    if (speed == 0.0F) return;
+    float timeLeft = StepSeconds;
+    // Swept circle contacts prevent tunneling even at maximum speed or with
+    // steering disabled. Remaining motion slides tangentially around the rock.
+    for (int contact = 0; contact < 3; ++contact) {
+        const auto motion = velocity * timeLeft;
+        const float a = glm::dot(motion, motion);
+        if (a < 1.0e-12F) return;
+        float firstHit = 1.0F;
+        const Obstacle* hit = nullptr;
+        for (const auto& obstacle : obstacles_) {
+            const float clearance = obstacle.radius + radius + 0.001F;
+            const auto offset = position - obstacle.position;
+            const float b = glm::dot(offset, motion);
+            if (b >= 0.0F) continue;
+            const float c = glm::dot(offset, offset) - clearance * clearance;
+            const float discriminant = b * b - a * c;
+            if (discriminant < 0.0F) continue;
+            const float fraction = std::max(0.0F, (-b - std::sqrt(discriminant)) / a);
+            if (fraction < firstHit) {
+                firstHit = fraction;
+                hit = &obstacle;
+            }
+        }
+        position += motion * firstHit;
+        if (hit == nullptr) return;
+        const auto normal = glm::normalize(position - hit->position);
+        position = hit->position + normal * (hit->radius + radius + 0.002F);
+        const glm::vec3 tangent{-normal.z, 0.0F, normal.x};
+        velocity = tangent * (glm::dot(velocity, tangent) < 0.0F ? -speed : speed);
+        timeLeft *= 1.0F - firstHit;
+    }
 }
 
 void AntScene::spawnFood() {
@@ -286,9 +442,16 @@ void AntScene::spawnFood() {
         food.radius = random(1.6F, 2.8F);
         const float extent = WorldHalfExtent - food.radius;
         const float nestClearance = nestRadius() + food.radius + 4.0F;
-        do {
+        bool placed = false;
+        for (int attempt = 0; attempt < 128; ++attempt) {
             food.position = {random(-extent, extent), 0.0F, random(-extent, extent)};
-        } while (glm::dot(food.position, food.position) < nestClearance * nestClearance);
+            if (glm::dot(food.position, food.position) >= nestClearance * nestClearance &&
+                terrainClear(food.position, food.radius + 1.0F)) {
+                placed = true;
+                break;
+            }
+        }
+        if (!placed) return;
         food.remaining = static_cast<int>(random(400.0F, 901.0F));
         totalGeneratedFood_ += static_cast<std::size_t>(food.remaining);
         if (empty != foodSources_.end()) {
@@ -311,8 +474,10 @@ float AntScene::sampleField(const std::vector<float>& field,
 
 void AntScene::deposit(std::vector<float>& field, const glm::vec3& position, float amount) {
     const auto sample = gridSample(position);
-    const auto add = [&field](std::size_t x, std::size_t z, float value) {
-        auto& cell = field[z * GridResolution + x];
+    const auto add = [this, &field](std::size_t x, std::size_t z, float value) {
+        const auto index = z * GridResolution + x;
+        if (blockedCells_[index] != 0) return;
+        auto& cell = field[index];
         cell = std::min(MaximumPheromone, cell + value);
     };
     add(sample.x, sample.z, amount * (1.0F - sample.blendX) * (1.0F - sample.blendZ));
@@ -336,11 +501,19 @@ void AntScene::updateField(std::vector<float>& field) {
             const auto previousX = x == 0 ? x : x - 1;
             const auto nextX = std::min(x + 1, GridResolution - 1);
             const auto index = z * GridResolution + x;
+            if (blockedCells_[index] != 0) {
+                fieldScratch_[index] = 0.0F;
+                continue;
+            }
             const float center = field[index];
-            const float neighbors = field[z * GridResolution + previousX] +
-                                    field[z * GridResolution + nextX] +
-                                    field[previousZ * GridResolution + x] +
-                                    field[nextZ * GridResolution + x];
+            // Reflect flux at rock surfaces, just as at the world boundary.
+            const auto neighbor = [&](std::size_t cell) {
+                return blockedCells_[cell] != 0 ? center : field[cell];
+            };
+            const float neighbors = neighbor(z * GridResolution + previousX) +
+                                    neighbor(z * GridResolution + nextX) +
+                                    neighbor(previousZ * GridResolution + x) +
+                                    neighbor(nextZ * GridResolution + x);
             fieldScratch_[index] = std::clamp(
                 (center + diffusion * (neighbors - 4.0F * center)) * retention,
                 0.0F, MaximumPheromone);
@@ -349,19 +522,118 @@ void AntScene::updateField(std::vector<float>& field) {
     field.swap(fieldScratch_);
 }
 
+void AntScene::planEnemyPaths() {
+    // Sample a local head count, not pheromones: old trails must not attract
+    // predators after ants have moved away. The coarse density map is separate
+    // from both the diffusion field and the finer A* navigation graph.
+    constexpr int resolution = 40;
+    constexpr float spacing = 2.0F * WorldHalfExtent / static_cast<float>(resolution);
+    constexpr int reach = static_cast<int>(EnemyDensityRadius / spacing) + 1;
+    struct DensityCell {
+        std::size_t count{0};
+        glm::vec3 sum{0.0F};
+    };
+    struct Target {
+        glm::vec3 position;
+        std::size_t count;
+        float distanceSquared;
+        std::size_t cell;
+    };
+    for (std::size_t index = 0; index < enemies_.size(); ++index) {
+        const auto& enemy = enemies_[index];
+        auto& pursuit = enemyPursuits_[index];
+        pursuit.path.clear();
+        pursuit.waypoint = 0;
+        if (agents_.empty() || !enemyPathfinder_.navigable(enemy.position)) continue;
+        std::array<DensityCell, resolution * resolution> density{};
+        for (const auto& ant : agents_) {
+            const auto offset = ant.position - enemy.position;
+            if (glm::dot(offset, offset) > EnemyTrackingRange * EnemyTrackingRange ||
+                glm::dot(ant.position, ant.position) <= 9.0F * 9.0F) continue;
+            const int cellX = static_cast<int>((ant.position.x + WorldHalfExtent) / spacing);
+            const int cellZ = static_cast<int>((ant.position.z + WorldHalfExtent) / spacing);
+            for (int z = std::max(0, cellZ - reach); z <= std::min(resolution - 1, cellZ + reach); ++z) {
+                for (int x = std::max(0, cellX - reach); x <= std::min(resolution - 1, cellX + reach); ++x) {
+                    const glm::vec3 center{-WorldHalfExtent + (static_cast<float>(x) + 0.5F) * spacing,
+                                           0.0F,
+                                          -WorldHalfExtent + (static_cast<float>(z) + 0.5F) * spacing};
+                    const auto delta = ant.position - center;
+                    if (glm::dot(delta, delta) > EnemyDensityRadius * EnemyDensityRadius) continue;
+                    auto& cell = density[static_cast<std::size_t>(z * resolution + x)];
+                    ++cell.count;
+                    cell.sum += ant.position;
+                }
+            }
+        }
+        std::vector<Target> targets;
+        for (std::size_t cell = 0; cell < density.size(); ++cell) {
+            if (density[cell].count == 0) continue;
+            auto position = density[cell].sum / static_cast<float>(density[cell].count);
+            // A crowd can straddle a rock; its centroid may lie inside it.
+            // In that case pursue a nearby clear density sample instead.
+            if (!enemyPathfinder_.navigable(position)) {
+                position = {-WorldHalfExtent + (static_cast<float>(cell % resolution) + 0.5F) * spacing,
+                             0.0F,
+                            -WorldHalfExtent + (static_cast<float>(cell / resolution) + 0.5F) * spacing};
+            }
+            const auto offset = position - enemy.position;
+            const float distanceSquared = glm::dot(offset, offset);
+            if (distanceSquared > EnemyTrackingRange * EnemyTrackingRange ||
+                !enemyPathfinder_.navigable(position)) continue;
+            targets.push_back({position, density[cell].count, distanceSquared, cell});
+        }
+        std::sort(targets.begin(), targets.end(), [](const Target& left, const Target& right) {
+            if (left.count != right.count) return left.count > right.count;
+            if (left.distanceSquared != right.distanceSquared) return left.distanceSquared < right.distanceSquared;
+            return left.cell < right.cell;
+        });
+        std::vector<glm::vec3> attempted;
+        for (const auto& target : targets) {
+            if (std::find(attempted.begin(), attempted.end(), target.position) != attempted.end()) continue;
+            attempted.push_back(target.position);
+            pursuit.path = enemyPathfinder_.findPath(enemy.position, target.position);
+            if (!pursuit.path.empty()) break;
+        }
+    }
+}
+
 void AntScene::updateEnemies() {
+    if (totalSteps_ % EnemyReplanSteps == 0) planEnemyPaths();
     for (std::size_t index = 0; index < enemies_.size(); ++index) {
         auto& enemy = enemies_[index];
-        const float speed = glm::length(enemy.velocity);
+        auto& pursuit = enemyPursuits_[index];
+        const float speed = pursuit.speed;
         auto& heading = enemyHeadings_[index];
+        if (!pursuit.path.empty()) {
+            while (pursuit.waypoint < pursuit.path.size() &&
+                   glm::length(pursuit.path[pursuit.waypoint] - enemy.position) <= 0.001F) {
+                ++pursuit.waypoint;
+            }
+            enemy.velocity = glm::vec3{0.0F};
+            if (pursuit.waypoint < pursuit.path.size()) {
+                const auto offset = pursuit.path[pursuit.waypoint] - enemy.position;
+                const float distance = glm::length(offset);
+                const float targetHeading = angle(offset);
+                heading = turnToward(heading, targetHeading, 2.5F * StepSeconds);
+                // Turn before following each segment so smoothing the heading
+                // cannot cut an A* corner through a rock or the protected nest.
+                if (std::abs(std::remainder(targetHeading - heading, 2.0F * Pi)) < 0.05F) {
+                    enemy.velocity = offset / distance * std::min(speed, distance / StepSeconds);
+                    moveOnTerrain(enemy.position, enemy.velocity, enemy.radius);
+                }
+            }
+            continue;
+        }
         heading += noise(seed_ ^ 0xA12D4F19U, static_cast<std::uint32_t>(index), totalSteps_) *
                    0.8F * StepSeconds;
         // Enemies roam outside the nest's protected inner area.
         if (glm::dot(enemy.position, enemy.position) < 9.0F * 9.0F) {
             heading = turnToward(heading, angle(enemy.position), 2.5F * StepSeconds);
         }
+        heading = avoidTerrain(enemy.position, heading, enemy.radius, speed, 2.5F * StepSeconds,
+                               static_cast<std::uint32_t>(index));
         enemy.velocity = direction(heading) * speed;
-        enemy.position += enemy.velocity * StepSeconds;
+        moveOnTerrain(enemy.position, enemy.velocity, enemy.radius);
         reflect(enemy.position, enemy.velocity, WorldHalfExtent - enemy.radius);
         heading = angle(enemy.velocity);
     }
@@ -393,12 +665,13 @@ void AntScene::step() {
 
         const float headingBeforeSensing = heading;
         const auto& targetField = carrying != 0 ? homePheromone_ : foodPheromone_;
-        const float left = sampleField(targetField,
-            ant.position + direction(heading - parameters_.sensorAngle) * parameters_.sensorDistance);
-        const float forward = sampleField(targetField,
-            ant.position + direction(heading) * parameters_.sensorDistance);
-        const float right = sampleField(targetField,
-            ant.position + direction(heading + parameters_.sensorAngle) * parameters_.sensorDistance);
+        const auto sense = [&](float sensorHeading) {
+            const auto target = ant.position + direction(sensorHeading) * parameters_.sensorDistance;
+            return clearPath(ant.position, target) ? sampleField(targetField, target) : 0.0F;
+        };
+        const float left = sense(heading - parameters_.sensorAngle);
+        const float forward = sense(heading);
+        const float right = sense(heading + parameters_.sensorAngle);
         float sensedHeading = heading;
         if (left > forward + 1.0e-5F && left > right + 1.0e-5F) {
             sensedHeading -= maximumTurn;
@@ -424,7 +697,7 @@ void AntScene::step() {
                 }
                 const auto delta = food.position - ant.position;
                 const float distanceSquared = glm::dot(delta, delta);
-                if (distanceSquared < nearestDistanceSquared) {
+                if (distanceSquared < nearestDistanceSquared && clearPath(ant.position, food.position, AntRadius)) {
                     nearest = &food;
                     nearestDistanceSquared = distanceSquared;
                 }
@@ -459,8 +732,9 @@ void AntScene::step() {
             heading = turnToward(heading, angle(avoidance), std::max(maximumTurn * 3.0F,
                                                                      6.0F * StepSeconds));
         }
+        heading = avoidTerrain(ant.position, heading, AntRadius, parameters_.speed, maximumTurn, ant.id);
         ant.velocity = direction(heading) * parameters_.speed;
-        ant.position += ant.velocity * StepSeconds;
+        moveOnTerrain(ant.position, ant.velocity, AntRadius);
         reflect(ant.position, ant.velocity, WorldHalfExtent);
         if (parameters_.speed > 0.0F) {
             heading = angle(ant.velocity);
