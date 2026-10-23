@@ -139,7 +139,8 @@ Actions drawPanel(BoidsScene& scene, Controls& controls, core::Camera& camera,
             ImGui::RadioButton("Attract", &controls.cursorMode, 1);
             slider("Force radius", controls.radius, 0.0F, 20.0F);
             slider("Force strength", controls.strength, 0.0F, 100.0F);
-            slider("Plane height", controls.planeHeight, -19.0F, 19.0F);
+            slider("Plane height", controls.planeHeight,
+                   simulation.world().minimum.y + 1.0F, simulation.world().maximum.y - 1.0F);
             ImGui::EndDisabled();
             ImGui::TextWrapped("Hover over the world to apply the force. The rings show its 3D radius on the selected height plane.");
             ImGui::TextDisabled("Force pauses over UI and during camera input.");

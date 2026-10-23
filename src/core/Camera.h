@@ -37,7 +37,7 @@ public:
     void pan(float deltaX, float deltaY, float viewportHeight);
     // Positive wheel deltas move toward the target.
     void zoom(float wheelDelta);
-    // Fits the [-20, 20] world box in a square or landscape viewport.
+    // Fits the [-40, 40] world box in a square or landscape viewport.
     void reset();
 
 private:

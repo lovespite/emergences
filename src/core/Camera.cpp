@@ -152,7 +152,7 @@ void Camera::reset() {
     target_ = glm::vec3(0.0F);
     yaw_ = std::numbers::pi_v<float> / 4.0F;
     pitch_ = std::numbers::pi_v<float> / 6.0F;
-    distance_ = 110.0F;
+    distance_ = 220.0F;
 }
 
 } // namespace emergences::core

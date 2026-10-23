@@ -21,7 +21,7 @@ struct Vertex {
 };
 static_assert(sizeof(Vertex) == 24 && offsetof(Vertex, color) == 12);
 
-constexpr float halfExtent = 20.0F;
+constexpr float halfExtent = 40.0F;
 constexpr std::uint32_t gridVertexCount = 44;
 constexpr std::uint32_t boundsVertexCount = 24;
 constexpr std::array<float, 3> gridColor{0.18F, 0.25F, 0.32F};
@@ -41,7 +41,7 @@ LineRenderer::LineRenderer(const Context& context, std::filesystem::path shaderD
 
     // Eleven lines in each horizontal direction, including the floor perimeter.
     for (int index = 0; index <= 10; ++index) {
-        const float coordinate = -halfExtent + 4.0F * static_cast<float>(index);
+        const float coordinate = -halfExtent + (2.0F * halfExtent / 10.0F) * static_cast<float>(index);
         line({coordinate, -halfExtent, -halfExtent},
              {coordinate, -halfExtent, halfExtent}, gridColor);
         line({-halfExtent, -halfExtent, coordinate},

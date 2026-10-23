@@ -167,9 +167,11 @@ void boundedWork() {
 void resetAndCount() {
     BoidsScene scene{16, 7};
     require(scene.simulation().rules().size() == 3, "Scene must install the three boids rules");
-    require(scene.simulation().world().minimum == glm::vec3{-20.0F} &&
-            scene.simulation().world().maximum == glm::vec3{20.0F},
+    require(scene.simulation().world().minimum == glm::vec3{-40.0F} &&
+            scene.simulation().world().maximum == glm::vec3{40.0F},
             "Simulation bounds must match the rendered world");
+    require(scene.simulation().world().maximum - scene.simulation().world().minimum == glm::vec3{80.0F},
+            "The default world must have an 80-unit edge on every axis");
     scene.simulation().rules()[0]->setWeight(2.7F);
     scene.simulation().rules()[1]->setRadius(6.0F);
     scene.simulation().setMotionLimits({0.0F, 6.0F, 11.0F});
@@ -261,8 +263,8 @@ void densityUsesLocalPeriodicNeighborhoods() {
     BoidsScene scene{0};
     scene.simulation().setMotionLimits({0.0F, 8.0F, 20.0F});
     std::array<sim::Agent, 3> agents{};
-    agents[0].position = {-19.5F, 0.0F, 0.0F};
-    agents[1].position = {19.5F, 0.0F, 0.0F};
+    agents[0].position = {scene.simulation().world().minimum.x + 0.5F, 0.0F, 0.0F};
+    agents[1].position = {scene.simulation().world().maximum.x - 0.5F, 0.0F, 0.0F};
     agents[2].position = {0.0F, 0.0F, 0.0F};
     scene.simulation().setAgents(agents);
     auto display = scene.refreshColors(ColorMode::Density);

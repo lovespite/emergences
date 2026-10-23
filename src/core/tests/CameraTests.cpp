@@ -52,9 +52,9 @@ void defaultFraming() {
             "Default target must be centered");
     require(center.z > 0.0F && center.z < 1.0F, "Target must use Vulkan zero-to-one depth");
     for (const float aspect : {1.0F, 16.0F / 9.0F}) {
-        for (const float x : {-20.0F, 20.0F}) {
-            for (const float y : {-20.0F, 20.0F}) {
-                for (const float z : {-20.0F, 20.0F}) {
+        for (const float x : {-40.0F, 40.0F}) {
+            for (const float y : {-40.0F, 40.0F}) {
+                for (const float z : {-40.0F, 40.0F}) {
                     const glm::vec3 ndc = project(camera, {x, y, z}, aspect);
                     require(std::abs(ndc.x) < 1.0F && std::abs(ndc.y) < 1.0F &&
                                 ndc.z > 0.0F && ndc.z < 1.0F,

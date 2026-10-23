@@ -37,7 +37,7 @@ void validateColorMode(ColorMode mode) {
 } // namespace
 
 BoidsScene::BoidsScene(std::size_t count, std::uint32_t seed)
-    : simulation_{count, sim::World{glm::vec3{-20.0F}, glm::vec3{20.0F}}, seed} {
+    : simulation_{count, sim::World{glm::vec3{-40.0F}, glm::vec3{40.0F}}, seed} {
     simulation_.rules().push_back(std::make_unique<Separation>());
     simulation_.rules().push_back(std::make_unique<Alignment>());
     simulation_.rules().push_back(std::make_unique<Cohesion>());

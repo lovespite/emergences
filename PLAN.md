@@ -7,7 +7,7 @@
 - 已建立 `core`、`sim`、`scenarios/boids` 三层目标；Window / Context 实现 GLFW 与 Vulkan 初始化，模拟层提供 CPU 后端，场景层提供独立 Boids 规则库及应用入口。
 - 已验证 LunarG Vulkan SDK 1.4.363.0、glslc、Khronos 校验层与 RTX 4060；模拟公共头文件独立编译及 Agent 布局检查通过。
 - **Phase 1 已完成**：Swapchain / Pipeline / Buffer / Descriptor、Camera、ParticleRenderer / LineRenderer 和 ImGuiLayer 已接入。FrameRenderer 统一管理命令缓冲、双帧提交、每交换链图像的呈现信号量、缩放重建与最小化暂停；每幅交换链图像拥有独立深度附件。
-- 默认程序运行 `[-20,20]` 世界中的 2048 个真实 CPU Boids，使用固定 `1/120` 秒步长、单帧最多 8 步；交互推进另有 8 ms 工作预算，在完整步之间检查，超额时放慢模拟时间并显示提示。支持 0–20000 数量、暂停 / 单步 / 重置、三规则权重 / 半径、速度 / 加速度限制、Wrap / Bounce 边界和四种颜色。`--render-preview` 保留 Phase 1 程序化粒子预览。
+- 默认程序运行 `[-40,40]` 世界中的 2048 个真实 CPU Boids，使用固定 `1/120` 秒步长、单帧最多 8 步；交互推进另有 8 ms 工作预算，在完整步之间检查，超额时放慢模拟时间并显示提示。支持 0–20000 数量、暂停 / 单步 / 重置、三规则权重 / 半径、速度 / 加速度限制、Wrap / Bounce 边界和四种颜色。`--render-preview` 保留 Phase 1 程序化粒子预览。
 - **Phase 1 历史验收**：Debug、Release 完整构建通过；当时两种配置的 `camera_math`、`vulkan_triangle`、`vulkan_particles` 均为 3/3 通过。Debug 另以 `VK_LAYER_VALIDATE_SYNC=1` 检查，无校验诊断。该历史记录不包含 Phase 2 新增测试。
 - 保留 12 帧三角形冒烟测试；新增至少 24 帧粒子冒烟测试，覆盖 0 / 1 / 257 / 8192 / 96 / 2048 粒子、缓冲扩容与缩减、模式 / 相机 / 面板和两次缩放，要求至少 3 代交换链。SDK 截图层已检查箭头、圆点、缩放画面，产物在 `build-host-x64/verification-phase1/`；未执行面板逐项点击的 UI 自动化。
 - **Phase 2 已完成**：World 的周期 / 反弹边界与最短位移、SpatialHash 邻域、CpuSimulation 同步积分、速度 / 加速度限制、确定性重置 / 数量调整和干预提交；Alignment / Cohesion / Separation 组成不依赖 Vulkan 的 `emergences::boids` 库。
@@ -140,7 +140,7 @@ emergences/
 | 个体渲染 | **实例化朝向三角 / 圆点 billboard**：各帧槽使用独立的 48 字节粒子记录 SSBO；顶点着色器通过 `gl_InstanceIndex` 读取记录，按 `gl_VertexIndex` 生成三角或六顶点圆点面片，朝向按投影速度计算。单次 draw call 画全部个体 |
 | 颜色编码 | 真实场景提供朝向 / 速度 / 局部密度 / 单色；只修改显示副本。密度统计半径 5 内邻居，固定 0–32 色阶并饱和，支持周期接缝 |
 | 相机与光标 | 左键拖旋转、滚轮缩放、中键平移；屏幕射线投影到可调高度的 XZ 平面，球形范围由三个圆环显示。UI 捕获、相机输入或失焦时暂停光标施力 |
-| 世界边界 | BoidsScene 显式使用与渲染一致的 `[-20,20]`；通用 World 默认 `[-25,25]`。支持**周期包裹（torus）**、硬墙反弹及多次越界处理 |
+| 世界边界 | BoidsScene 显式使用与渲染一致的 `[-40,40]`；通用 World 默认 `[-25,25]`。支持**周期包裹（torus）**、硬墙反弹及多次越界处理 |
 | 邻域查询（CPU） | 每步按启用规则最大半径重建稀疏均匀网格；通常格宽不小于该半径，跨度较小的轴使用一格。查询相邻 27 格、周期去重、精确距离过滤；密集或大半径查询可退化为全量两两比较 |
 | 积分（CPU） | 所有规则读取旧状态，权重求和 → clamp 加速度 → `vel += acc*dt` → clamp 速度上下限 → `pos += vel*dt` → 边界处理。BoidsScene 固定 `1/120` 秒，每帧最多 8 步；交互应用加入 8 ms 工作预算，丢弃超额整步积压 |
 | 规则融合与并行（CPU） | 场景层提供 BoidsRuleKernel，模拟层只依赖 RuleKernel 抽象。每步主线程准备参数快照，支持的规则集合按个体并行；保留各规则累计精度、邻居顺序和原加权顺序。网格重建、干预和最终校验保持串行 |
