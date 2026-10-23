@@ -1,6 +1,6 @@
 # 涌现模拟软件（emergences）— 实现方案
 
-## 实施进度（2026-10-22）
+## 实施进度（2026-10-23）
 
 - 实际项目目录为 `D:\Projects\emergences`。
 - 已建立 C++20 / CMake 构建、VS2022 预设、固定提交与校验值的 FetchContent 依赖、GLSL 构建期编译入口。
@@ -16,6 +16,7 @@
 - **Phase 3 验收**：Debug / Release 全工程构建成功，完整 CTest 各 **10/10 通过**；Debug 开启 `VK_LAYER_VALIDATE_SYNC=1` 后无校验诊断。新增 `boids_scene`、`boids_cursor`、`vulkan_boids`，相机测试增加射线 / 平面拾取。在 `build/sim-phase3` 独立配置 `EMERGENCES_BUILD_APP=OFF`，Debug / Release 构建及六项 CPU 测试各 **6/6 通过**。真实场景冒烟通过 48 帧、两次缩放及 3 代交换链，并验证吸引 / 排斥轨迹不同于未施力对照。SDK 截图已检查真实鸟群聚集、面板、密度色、圆点和干预范围，产物在 `build-host-x64/verification-phase3/`。未执行逐项 GUI 点击自动化或正式性能基准。
 - **下一阶段为 Phase 4**：CPU 场景验收后实现 GPU compute、资源与同步桥接及后端切换。
 - **Phase 3 长时性能修正**：复现了密集鸟群邻居增多与八步补算叠加造成的约 1 FPS。空间查询缓存最短位移、最大半径规则复用邻居列表，交互推进加入工作预算。历史测量使用当时的默认规则参数（`weight / radius`：Alignment `1 / 5`、Cohesion `0.6 / 5`、Separation `1.5 / 2`），不代表当前默认参数的性能：相同 20 秒状态的 Release 单步约 80.6→15.2 ms；八步约 624 ms 的交互推进改为预算下一步约 14 ms（过载时模拟时钟减速）。该组参数下 2048 个体连续 2400 步各检查点与原实现逐字节一致。回归增加密集呈现、预算耗尽、缓存与非缓存规则对照及极端周期边界检查，记录见 README 与 `build/perf-diagnosis/`。
+- **CPU 三规则融合与可选多线程**：BoidsScene 自动安装场景层的 `BoidsRuleKernel`，一次邻居遍历累加三规则；模拟层通过通用 `RuleKernel` 接口调度支持的并行计算，每步刷新参数快照。通用规则与不支持的规则集合继续串行。空间网格保持原实现，新增 `sim_cpu_parallel`、`boids_kernel`，当前 CPU 测试注册数为八项。OpenMP 可选，GPU compute 仍属于 Phase 4。
 
 构建与当前实现边界见 [README.md](README.md)。
 
@@ -109,6 +110,7 @@ emergences/
 │   │   ├── Simulation.h               # 后端无关抽象
 │   │   ├── ComputeDevice.h            # GPU 薄设备接口，core 实现（Phase 4）
 │   │   ├── cpu/SpatialHash.h/.cpp     # 稀疏均匀网格与邻域查询
+│   │   ├── cpu/RuleKernel.h          # 可选规则融合与线程安全计算接口
 │   │   ├── cpu/CpuSimulation.h/.cpp   # CPU 后端、同步积分与干预
 │   │   └── gpu/GpuSimulation.h/.cpp   # GPU 后端（Phase 4）
 │   └── scenarios/boids/
@@ -119,6 +121,7 @@ emergences/
 │       ├── Alignment.h/.cpp
 │       ├── Cohesion.h/.cpp
 │       ├── Separation.h/.cpp
+│       ├── BoidsRuleKernel.h/.cpp    # 三规则融合、参数快照与原顺序加权
 │       ├── CursorIntervention.h/.cpp  # 光标力参数、周期距离与平滑衰减
 │       ├── CursorRepel.h/.cpp         # 光标排斥干预
 │       ├── CursorAttract.h/.cpp       # 光标吸引干预
@@ -140,6 +143,7 @@ emergences/
 | 世界边界 | BoidsScene 显式使用与渲染一致的 `[-20,20]`；通用 World 默认 `[-25,25]`。支持**周期包裹（torus）**、硬墙反弹及多次越界处理 |
 | 邻域查询（CPU） | 每步按启用规则最大半径重建稀疏均匀网格；通常格宽不小于该半径，跨度较小的轴使用一格。查询相邻 27 格、周期去重、精确距离过滤；密集或大半径查询可退化为全量两两比较 |
 | 积分（CPU） | 所有规则读取旧状态，权重求和 → clamp 加速度 → `vel += acc*dt` → clamp 速度上下限 → `pos += vel*dt` → 边界处理。BoidsScene 固定 `1/120` 秒，每帧最多 8 步；交互应用加入 8 ms 工作预算，丢弃超额整步积压 |
+| 规则融合与并行（CPU） | 场景层提供 BoidsRuleKernel，模拟层只依赖 RuleKernel 抽象。每步主线程准备参数快照，支持的规则集合按个体并行；保留各规则累计精度、邻居顺序和原加权顺序。网格重建、干预和最终校验保持串行 |
 | 后端切换 | `Backend` 枚举 + ImGui 下拉已接入，当前 CPU 可用、GPU 灰显；Phase 4 实现 GPU 自行演化、大 N |
 
 ---
@@ -206,9 +210,13 @@ Boids 三规则已实现为三个 `Rule` 子类（Alignment/Cohesion/Separation�
 
 `CpuSimulation` 提供 `world/setWorld`、`motionLimits/setMotionLimits` 和 `setAgents`。默认最小 / 最大速度为 `1/8`、最大加速度为 `20`；导入状态、世界和速度限制变化后会重新规范速度与边界。`reset` 按当前数量、世界、速度限制与种子重建初始状态，`setCount` 保留现有前缀并确定性地产生新增个体。状态中的 ID 是元数据，不作为邻域索引；导入 ID 与新增索引组合时由调用者管理唯一性。最小组装示例见 [README.md](README.md)。
 
+`setRuleKernel` 安装可选的 `cpu::RuleKernel`；`prepare` 每步在规则校验后、主线程上执行，支持时缓存完整参数供只读的 `acceleration` 并行使用。`BoidsRuleKernel` 位于场景层，支持 Alignment / Cohesion / Separation 各一个的任意排列，保留原规则加权顺序；自定义、缺失、重复规则或未安装 kernel 时回退通用串行路径。这样 `sim` 不依赖 Boids 类型，且本次不更改空间网格。
+
+`setWorkerCount(0)` 默认自动选择：个体少于 512 时串行，否则取运行时可见逻辑处理器数的一半，至少 1 个、至多 16 个线程，并受 OpenMP 运行时上限和个体数量限制。`setWorkerCount(1)` 固定串行，大于 1 为请求线程数，受运行时、逻辑处理器数和个体数量限制。`workerCount()` 返回配置值；只对支持的 kernel 并行。CMake 的 `EMERGENCES_ENABLE_OPENMP` 默认 `ON`，检测到支持即启用，缺少支持则串行；设为 `OFF` 可验证兼容路径，仍保留三规则融合。kernel、线程数与规则的修改均在步进之间进行。
+
 干预在规则积分后按插入顺序执行；最终状态与世界通过校验、速度和边界规范后才提交。失败的步进保留可见的旧个体 / 世界，回调在这些记录之外的副作用无法回滚。规则和干预集合只允许在步进之间修改。`CursorRepel` / `CursorAttract` 使用世界最短位移计算球形邻域，按 reverse smoothstep 随距离平滑衰减，以强度乘 `dt` 改变速度；后端随后重施速度限制。ImGui 提供开关、模式、半径、强度和交互平面高度，屏幕拾取失败或输入被占用时停用干预。
 
-`BoidsScene` 组合 CPU 模拟与三规则，提供 `advance`、`setPaused`、`singleStep`、`reset`、模拟时钟和 `refreshColors`。暂停不积累时间，暂停切换和重置清除不足一步的时间；重置保留数量、参数和暂停状态。显示颜色复制自模拟状态，密度通过独立空间网格查询，不改写模拟记录。
+`BoidsScene` 组合 CPU 模拟与三规则，自动安装 `BoidsRuleKernel` 并采用默认自动线程策略，提供 `advance`、`setPaused`、`singleStep`、`reset`、模拟时钟和 `refreshColors`。暂停不积累时间，暂停切换和重置清除不足一步的时间；重置保留数量、参数和暂停状态。显示颜色复制自模拟状态，密度通过独立空间网格查询，不改写模拟记录。
 
 ---
 
@@ -245,7 +253,7 @@ Boids 三规则已实现为三个 `Rule` 子类（Alignment/Cohesion/Separation�
 
 ## 验证方式
 
-1. **CPU 独立构建与自动检查**：`cmake --preset vs2022-sim`，随后 `cmake --build --preset sim-debug`、`ctest --preset sim-debug`，Release 对应 `sim-release`。不需要 Vulkan SDK；六项测试为 `sim_world_grid`、`sim_cpu`、`boids_rules`、`boids_simulation`、`boids_scene`、`boids_cursor`。除原有全量邻域对照与确定性重放外，覆盖帧时间分割、步数上限、暂停 / 单步 / 重置、独立颜色副本、周期密度及光标力。完整应用配置 `cmake --preset vs2022 -DEMERGENCES_ENABLE_GPU_TESTS=ON` 后，Debug 使用 `ctest --preset debug`，Release 使用 `ctest --test-dir build-host-x64 -C Release --output-on-failure`，另包含 `camera_math`、`vulkan_triangle`、`vulkan_particles` 和 `vulkan_boids`，合计十项；完整构建需要 Vulkan SDK。
+1. **CPU 独立构建与自动检查**：`cmake --preset vs2022-sim`，随后 `cmake --build --preset sim-debug`、`ctest --preset sim-debug`，Release 对应 `sim-release`。不需要 Vulkan SDK；八项测试为 `sim_world_grid`、`sim_cpu`、`sim_cpu_parallel`、`boids_rules`、`boids_kernel`、`boids_simulation`、`boids_scene`、`boids_cursor`。除原有全量邻域对照、确定性重放、场景和干预检查外，新增融合与独立规则的逐分量位对照、参数快照 / 重排 / 回退，以及串行 / 并行轨迹、工作线程异常和提交顺序。可在独立构建目录设置 `EMERGENCES_ENABLE_OPENMP=OFF` 检查串行兼容路径，命令见 README。完整应用配置 `cmake --preset vs2022 -DEMERGENCES_ENABLE_GPU_TESTS=ON` 后，Debug 使用 `ctest --preset debug`，Release 使用 `ctest --test-dir build-host-x64 -C Release --output-on-failure`，另包含 `camera_math`、`vulkan_triangle`、`vulkan_particles` 和 `vulkan_boids`，合计十二项；完整构建需要 Vulkan SDK。
 2. **渲染回归与真实场景冒烟**：`--render-preview` 打开 Phase 1 程序化预览；`--render-smoke-test` 保留粒子数量 / 缓冲变化、相机、UI 绘制和缩放回归。`--boids-smoke-test` 呈现至少 48 帧真实模拟，检查数量、暂停 / 单步 / 重置、规则、限幅、边界、颜色、光标开关 / 输入抑制和两次缩放。自动测试通过程序设置参数，不等同于鼠标逐项点击面板。
 3. **校验层**：Debug 运行无 `VK_LAYER_KHRONOS_validation` 报错；可设置 `VK_LAYER_VALIDATE_SYNC=1` 加验同步。
 4. **Phase 3 交互复查项目**：实现已接通，以下交互行为可按 README 说明复查；本轮尚未声明逐项 GUI 点击验收完成：

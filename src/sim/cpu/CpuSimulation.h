@@ -1,8 +1,10 @@
 #pragma once
 
 #include <cstdint>
+#include <exception>
 
 #include "sim/Simulation.h"
+#include "sim/cpu/RuleKernel.h"
 #include "sim/cpu/SpatialHash.h"
 
 namespace emergences::sim::cpu {
@@ -43,7 +45,32 @@ public:
     // Positions and speeds are normalized to the configured world and limits.
     void setAgents(std::span<const Agent> agents);
 
+    // Configuration and rule changes are only allowed between steps. A kernel
+    // is optional; nullptr or prepare(false) keeps arbitrary rules serial.
+    void setRuleKernel(std::unique_ptr<RuleKernel> kernel);
+    // 0: automatic (small flocks stay serial, at most 16 threads); 1: serial.
+    // Larger requests are capped by the OpenMP runtime and agent count. Builds
+    // without OpenMP always use one thread, but still use a supported kernel.
+    void setWorkerCount(std::size_t count) noexcept;
+    [[nodiscard]] std::size_t workerCount() const noexcept;
+
 private:
+    // Keep frequently updated vector metadata off other workers' cache lines.
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable: 4324) // Padding to the next cache line is intentional.
+#endif
+    struct alignas(64) WorkerScratch {
+        std::vector<Neighbor> neighbors;
+        std::vector<Neighbor> ruleNeighbors;
+        std::exception_ptr failure;
+        std::size_t failureIndex{0};
+    };
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+
+    [[nodiscard]] std::size_t workersForStep(bool useKernel) const noexcept;
     [[nodiscard]] Agent makeAgent(std::size_t index) const;
     void normalize(std::vector<Agent>& agents, const World& world,
                    const MotionLimits& limits) const;
@@ -54,8 +81,9 @@ private:
     std::vector<Agent> agents_;
     std::vector<Agent> next_;
     SpatialHash grid_;
-    std::vector<Neighbor> neighbors_;
-    std::vector<Neighbor> ruleNeighbors_;
+    std::unique_ptr<RuleKernel> ruleKernel_;
+    std::size_t workerCount_{0};
+    std::vector<WorkerScratch> workerScratch_;
     std::vector<std::unique_ptr<Rule>> rules_;
     std::vector<std::unique_ptr<Intervention>> interventions_;
 };

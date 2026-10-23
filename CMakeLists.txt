@@ -8,6 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(EMERGENCES_BUILD_APP "Build the GLFW / Vulkan application" ON)
 option(EMERGENCES_ENABLE_GPU_TESTS "Register Vulkan presentation smoke tests (requires a desktop and GPU)" OFF)
+option(EMERGENCES_ENABLE_OPENMP "Use OpenMP for supported CPU rule kernels when available" ON)
 
 include(CTest)
 include(cmake/ProjectOptions.cmake)

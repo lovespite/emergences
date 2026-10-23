@@ -4,9 +4,14 @@
 #include <cmath>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 
 #include <glm/geometric.hpp>
 #include <glm/vec3.hpp>
+
+#if EMERGENCES_HAS_OPENMP
+#include <omp.h>
+#endif
 
 namespace emergences::sim::cpu {
 namespace {
@@ -106,43 +111,60 @@ void CpuSimulation::step(float dt) {
             throw std::invalid_argument("Interventions must be nonnull");
         }
     }
+    const bool useKernel = ruleKernel_ && ruleKernel_->prepare(rules_);
     if (activeRules && maximumRadius > 0.0F) {
         grid_.rebuild(agents_, world_, maximumRadius);
     }
 
+    const std::size_t workers = workersForStep(useKernel);
+    workerScratch_.resize(workers);
+    for (auto& scratch : workerScratch_) {
+        scratch.failure = nullptr;
+        scratch.failureIndex = agents_.size();
+    }
     next_ = agents_;
-    for (std::size_t index = 0; index < agents_.size(); ++index) {
+    const auto integrateOne = [&](std::size_t index, WorkerScratch& scratch) {
+        auto& neighbors = scratch.neighbors;
+        auto& ruleNeighbors = scratch.ruleNeighbors;
         const Agent& self = agents_[index];
-        neighbors_.clear();
+        neighbors.clear();
         if (activeRules && maximumRadius > 0.0F) {
-            grid_.query(index, maximumRadius, neighbors_);
+            grid_.query(index, maximumRadius, neighbors);
         }
         glm::dvec3 acceleration{0.0};
-        for (const auto& rule : rules_) {
-            if (rule->weight() == 0.0F) {
-                continue;
+        if (useKernel) {
+            acceleration = ruleKernel_->acceleration(self, neighbors, world_);
+            if (!std::isfinite(acceleration.x) || !std::isfinite(acceleration.y) ||
+                !std::isfinite(acceleration.z)) {
+                throw std::invalid_argument("Rule kernel returned a nonfinite acceleration");
             }
-            std::span<const Neighbor> ruleNeighbors = neighbors_;
-            // The maximum-radius query already has exactly these neighbors.
-            // Smaller rules still receive a precisely filtered view, including
-            // custom rules which do not filter their input themselves.
-            if (rule->radius() != maximumRadius) {
-                ruleNeighbors_.clear();
-                const double radiusSquared = static_cast<double>(rule->radius()) * rule->radius();
-                if (rule->radius() > 0.0F) {
-                    for (const Neighbor& neighbor : neighbors_) {
-                        if (neighbor.distanceSquared <= radiusSquared) {
-                            ruleNeighbors_.push_back(neighbor);
+        } else {
+            for (const auto& rule : rules_) {
+                if (rule->weight() == 0.0F) {
+                    continue;
+                }
+                std::span<const Neighbor> selectedNeighbors = neighbors;
+                // The maximum-radius query already has exactly these neighbors.
+                // Smaller rules still receive a precisely filtered view, including
+                // custom rules which do not filter their input themselves.
+                if (rule->radius() != maximumRadius) {
+                    ruleNeighbors.clear();
+                    const double radiusSquared = static_cast<double>(rule->radius()) * rule->radius();
+                    if (rule->radius() > 0.0F) {
+                        for (const Neighbor& neighbor : neighbors) {
+                            if (neighbor.distanceSquared <= radiusSquared) {
+                                ruleNeighbors.push_back(neighbor);
+                            }
                         }
                     }
+                    selectedNeighbors = ruleNeighbors;
                 }
-                ruleNeighbors = ruleNeighbors_;
+                const glm::vec3 steering = rule->steer(self, selectedNeighbors, world_);
+                if (!finite(steering)) {
+                    throw std::invalid_argument("Rule returned a nonfinite acceleration");
+                }
+                acceleration += glm::dvec3{steering} * static_cast<double>(rule->weight());
             }
-            const glm::vec3 steering = rule->steer(self, ruleNeighbors, world_);
-            if (!finite(steering)) {
-                throw std::invalid_argument("Rule returned a nonfinite acceleration");
-            }
-            acceleration += glm::dvec3{steering} * static_cast<double>(rule->weight());
         }
         const double magnitude = glm::length(acceleration);
         if (magnitude > static_cast<double>(limits_.maximumAcceleration)) {
@@ -154,6 +176,42 @@ void CpuSimulation::step(float dt) {
         next.position = checkedPosition(glm::dvec3{self.position} +
                                          glm::dvec3{next.velocity} * static_cast<double>(dt));
         world_.applyBoundary(next.position, next.velocity);
+    };
+
+#if EMERGENCES_HAS_OPENMP
+    if (workers > 1) {
+        const int requestedThreads = static_cast<int>(workers);
+#pragma omp parallel num_threads(requestedThreads)
+        {
+            auto& scratch = workerScratch_[static_cast<std::size_t>(omp_get_thread_num())];
+#pragma omp for schedule(static)
+            for (std::int64_t rawIndex = 0; rawIndex < static_cast<std::int64_t>(agents_.size()); ++rawIndex) {
+                const auto index = static_cast<std::size_t>(rawIndex);
+                try {
+                    integrateOne(index, scratch);
+                } catch (...) {
+                    // Each thread owns its failure slot. Report the lowest agent
+                    // index after joining, independently of scheduling order.
+                    if (index < scratch.failureIndex) {
+                        scratch.failureIndex = index;
+                        scratch.failure = std::current_exception();
+                    }
+                }
+            }
+        }
+        const auto firstFailure = std::min_element(workerScratch_.begin(), workerScratch_.end(),
+            [](const WorkerScratch& left, const WorkerScratch& right) {
+                return left.failureIndex < right.failureIndex;
+            });
+        if (firstFailure->failure) {
+            std::rethrow_exception(firstFailure->failure);
+        }
+    } else
+#endif
+    {
+        for (std::size_t index = 0; index < agents_.size(); ++index) {
+            integrateOne(index, workerScratch_.front());
+        }
     }
 
     World nextWorld = world_;
@@ -163,6 +221,31 @@ void CpuSimulation::step(float dt) {
     normalize(next_, nextWorld, limits_);
     agents_.swap(next_);
     world_ = nextWorld;
+}
+
+void CpuSimulation::setRuleKernel(std::unique_ptr<RuleKernel> kernel) {
+    ruleKernel_ = std::move(kernel);
+}
+
+void CpuSimulation::setWorkerCount(std::size_t count) noexcept { workerCount_ = count; }
+std::size_t CpuSimulation::workerCount() const noexcept { return workerCount_; }
+
+std::size_t CpuSimulation::workersForStep(bool useKernel) const noexcept {
+#if EMERGENCES_HAS_OPENMP
+    if (!useKernel || workerCount_ == 1 || agents_.size() < 2 ||
+        (workerCount_ == 0 && agents_.size() < 512)) {
+        return 1;
+    }
+    const auto processors = static_cast<std::size_t>(std::max(1, omp_get_num_procs()));
+    const auto available = std::min(processors,
+        static_cast<std::size_t>(std::max(1, omp_get_max_threads())));
+    const std::size_t requested = workerCount_ == 0
+        ? std::min<std::size_t>(16, std::max<std::size_t>(1, processors / 2)) : workerCount_;
+    return std::min({requested, available, agents_.size()});
+#else
+    (void)useKernel;
+    return 1;
+#endif
 }
 
 void CpuSimulation::reset() {

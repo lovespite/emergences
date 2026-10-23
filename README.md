@@ -17,6 +17,8 @@ Phase 2 验收记录（2026-10-22）：Debug / Release 全工程构建成功，�
 
 Phase 3 验收记录（2026-10-22）：Debug / Release 完整构建成功，完整 CTest 各 **10/10 通过**；Debug 开启 `VK_LAYER_VALIDATE_SYNC=1` 后无校验诊断。独立 CPU 路径在 `build/sim-phase3` 设置 `EMERGENCES_BUILD_APP=OFF`，Debug / Release 构建及测试各 **6/6 通过**。新增检查覆盖固定步长、暂停 / 单步 / 重置、着色、光标力和屏幕射线拾取；真实场景冒烟还对照未施力轨迹，验证两种干预实际改变运动。SDK 截图确认面板、密度色、圆点、吸引 / 排斥范围及真实鸟群聚集；截图与日志位于 `build-host-x64/verification-phase3/`。这些检查不包含逐项鼠标点击验收或正式性能基准。
 
+CPU 融合与并行验收记录（2026-10-23）：Debug / Release 完整构建和 CTest 各 **12/12 通过**，Debug 开启 `VK_LAYER_VALIDATE_SYNC=1` 后无校验诊断；关闭 OpenMP 的独立 CPU Release 构建 **8/8 通过**。六组固定快照在融合串行和默认自动并行下，单步及连续 32 步输出均与优化前逐字节一致。当前默认参数、本机 i9-13980HX、匹配正式应用编译选项的 Release 对照中，2048 个体演化 20 秒状态的单步约 **11.30→2.32 ms**，2048 极密集状态约 **83.12→10.82 ms**，8192 分团状态约 **107.93→20.48 ms**。数值为两轮中位数的汇总，每轮预热 2 次后测 11 次；恢复快照不计时，数据是热缓存单步耗时，不包含着色和呈现，不能直接换算为帧率。完整结果包含各轮波动，位于 `build/cpu-parallel-verification/production-summary.csv`；其余日志、固定快照对照程序和旧版源码也保存在该目录。默认应用已启用融合和自动线程策略，空间网格与显示颜色计算未在此次改动中优化。
+
 SDK 截图层已验证箭头、圆点和缩放后的实际画面，本机产物位于 `build-host-x64/verification-phase1/`。冒烟测试通过程序设置切换模式和相机，并绘制面板；这些检查不包含鼠标逐项点击面板的 UI 自动化。
 
 本机 Vulkan Loader 仍报告两个不存在的 Steam 隐式图层 JSON 路径。这是已有系统注册项的加载诊断，不影响此次呈现；程序保留 `[Vulkan loader]` 输出，与 `[Vulkan validation]` 的 API 校验消息区分，未修改系统注册表。
@@ -89,13 +91,25 @@ cmake --build --preset sim-release
 ctest --preset sim-release
 ```
 
-`vs2022-sim` 使用独立目录 `build/sim-only` 并设置 `EMERGENCES_BUILD_APP=OFF`。`emergences::sim` 包含 World、SpatialHash 和 CpuSimulation；`emergences::boids` 包含三规则、BoidsScene、CursorIntervention / CursorRepel / CursorAttract，并传递链接模拟库。启用 `BUILD_TESTING` 时，模拟层和场景库公共头文件分别独立编译，检查头文件自包含及 `Agent` 布局约束，同时注册以下六项 CPU 测试：
+`vs2022-sim` 使用独立目录 `build/sim-only` 并设置 `EMERGENCES_BUILD_APP=OFF`。`emergences::sim` 包含 World、SpatialHash、CpuSimulation 和可选的 RuleKernel 接口；`emergences::boids` 包含三规则、BoidsRuleKernel、BoidsScene、CursorIntervention / CursorRepel / CursorAttract，并传递链接模拟库。
+
+`EMERGENCES_ENABLE_OPENMP` 默认 `ON`，配置时检测到编译器支持就启用 OpenMP，没有支持时自动使用串行路径。设为 `OFF` 可验证不依赖 OpenMP 的兼容构建；该配置仍使用 Boids 三规则融合计算：
+
+```powershell
+cmake -S . -B build/sim-serial -G "Visual Studio 17 2022" -A x64 -T host=x64 -DEMERGENCES_BUILD_APP=OFF -DEMERGENCES_ENABLE_OPENMP=OFF
+cmake --build build/sim-serial --config Release
+ctest --test-dir build/sim-serial -C Release --output-on-failure
+```
+
+启用 `BUILD_TESTING` 时，模拟层和场景库公共头文件分别独立编译，检查头文件自包含及 `Agent` 布局约束，同时注册以下八项 CPU 测试：
 
 | CTest 名称 | 检查范围 |
 | --- | --- |
 | `sim_world_grid` | Wrap / Bounce 边界、最短周期位移、空间哈希与全量查询对照、半径与无重复邻居语义 |
 | `sim_cpu` | 同步步进、规则加权、速度 / 加速度限幅、确定性初始化、重置 / 数量变化、干预和异常状态保持 |
+| `sim_cpu_parallel` | 串行 / 并行轨迹与参数变化、通用规则串行回退、工作线程异常的确定性与状态保持、干预在并行结束后执行 |
 | `boids_rules` | 三规则数学、独立半径、周期接缝、浮点半径边界、空邻域 / 重合 / 零半径及参数校验 |
+| `boids_kernel` | 融合与独立规则逐分量位对照、规则顺序、参数快照、周期 / 半径边界、零参数、重合及不支持规则回退 |
 | `boids_simulation` | 两种边界各 100 步全量邻域对照，以及 512 个体、240 步的确定性重放 |
 | `boids_scene` | 60 / 120 / 144 Hz 帧时间分割一致性、步数上限、暂停 / 单步 / 重置、显示颜色不修改模拟、周期密度与固定色阶 |
 | `boids_cursor` | 吸引 / 排斥方向、距离衰减、开关 / 零强度 / 零半径、周期接缝、非法输入与速度限制 |
@@ -111,6 +125,7 @@ ctest --preset sim-release
 
 #include "sim/cpu/CpuSimulation.h"
 #include "scenarios/boids/Alignment.h"
+#include "scenarios/boids/BoidsRuleKernel.h"
 #include "scenarios/boids/Cohesion.h"
 #include "scenarios/boids/Separation.h"
 
@@ -120,6 +135,8 @@ int main() {
     simulation.rules().push_back(std::make_unique<scenarios::boids::Alignment>());
     simulation.rules().push_back(std::make_unique<scenarios::boids::Cohesion>());
     simulation.rules().push_back(std::make_unique<scenarios::boids::Separation>());
+    simulation.setRuleKernel(std::make_unique<scenarios::boids::BoidsRuleKernel>());
+    simulation.setWorkerCount(0); // 默认自动选择；设为 1 可固定串行。
     simulation.setMotionLimits({1.0F, 8.0F, 20.0F});
 
     for (int step = 0; step < 240; ++step) {
@@ -128,6 +145,10 @@ int main() {
     // simulation.agents() 提供只读状态，可由场景层转换为渲染记录。
 }
 ```
+
+`BoidsRuleKernel` 在一次邻居遍历中累加三规则，保留各规则的浮点精度、邻居顺序和原规则加权顺序。它支持 Alignment、Cohesion、Separation 各一个的任意排列；每步在主线程重新读取权重 / 半径，生成工作线程只读的参数快照。未安装 kernel，或集合含自定义、缺失、重复规则时，CPU 后端使用通用串行规则路径。模拟层只依赖 `RuleKernel` 抽象，不依赖 Boids 类型；本次优化保持原有 `SpatialHash` 网格实现。
+
+`setWorkerCount(0)` 为默认自动策略：少于 512 个体时串行，其余取运行时可见逻辑处理器数的一半，至少 1 个、至多 16 个线程，并受 OpenMP 运行时上限和个体数量限制。`setWorkerCount(1)` 固定串行；大于 1 表示请求线程数，仍受运行时、逻辑处理器数和个体数量限制。只有支持当前规则集合的 kernel 才允许并行，没有 OpenMP 时始终串行。`workerCount()` 返回配置值而非某一步实际使用的线程数。线程数、kernel 和规则集合只在步进之间修改；空间网格重建、干预和最终状态校验仍串行执行。
 
 `World` 默认是 `[-25,25]` 的周期世界（`BoundaryMode::Wrap`），应用的 `BoidsScene` 显式使用 `[-20,20]` 以匹配渲染边界。两者都支持 `Bounce` 硬墙反弹和越过多次边界的位移。周期邻居距离、聚拢和分离均使用最短周期方向，因此两侧接缝附近的个体相互可见。世界范围必须有限且各轴跨度为可表示的正浮点数。
 
@@ -141,7 +162,7 @@ int main() {
 
 干预在积分后按插入顺序执行，可以修改个体数量、状态和世界。全部干预结束后，后端校验最终状态、重施速度限制与边界，再提交新状态；失败的步进保留外部可见的旧个体和世界，但无法撤销回调对这些记录以外的副作用。规则与干预集合只能在步进之间修改，不能包含空指针。`CursorRepel` / `CursorAttract` 是独立于 UI 的 CPU 干预：使用世界最短位移计算球形邻域，在作用半径内按 reverse smoothstep 平滑衰减，以强度乘 `dt` 修改速度；之后仍遵守后端速度限制。
 
-`BoidsScene` 组装三规则并管理固定步长、模拟时钟和显示颜色。`simulation()` 暴露底层 CPU 参数接口；`advance(elapsedSeconds, workBudgetSeconds)` 拒绝负数和非法时间，工作预算默认正无穷，保留无墙钟限制的确定性推进；交互应用显式传入 `0.008`。`lastAdvanceLimited()` 表示最近一次推进丢弃了时间，`singleStep()` 只在暂停时推进一步。`refreshColors(ColorMode)` 生成独立显示记录，方向、速度、密度与纯色切换不会修改模拟状态。密度查询复用 `SpatialHash`，使用固定邻居数色阶，避免远处个体数量变化导致局部颜色重新缩放。
+`BoidsScene` 组装三规则、自动安装 `BoidsRuleKernel`，按上述默认策略启用支持的多线程计算，并管理固定步长、模拟时钟和显示颜色。`simulation()` 暴露底层 CPU 参数接口；`advance(elapsedSeconds, workBudgetSeconds)` 拒绝负数和非法时间，工作预算默认正无穷，保留无墙钟限制的确定性推进；交互应用显式传入 `0.008`。`lastAdvanceLimited()` 表示最近一次推进丢弃了时间，`singleStep()` 只在暂停时推进一步。`refreshColors(ColorMode)` 生成独立显示记录，方向、速度、密度与纯色切换不会修改模拟状态。密度查询复用 `SpatialHash`，使用固定邻居数色阶，避免远处个体数量变化导致局部颜色重新缩放。
 
 ## 可选 GPU 呈现测试
 
@@ -162,7 +183,7 @@ ctest --test-dir build-host-x64 -C Release --output-on-failure
 | `vulkan_particles` | `--render-smoke-test` 的粒子、辅助线、面板、相机和缓冲扩容路径 |
 | `vulkan_boids` | `--boids-smoke-test` 的真实模拟上传、控制状态、光标力、四种颜色和缩放路径 |
 
-三个 GPU 呈现测试会短暂创建窗口并自动缩放，测试的是渲染路径，当前模拟仍使用 CPU。CTest 会检查输出，在任何 `[Vulkan validation]` 消息（包括资源销毁时的消息）出现时失败；Loader 的一般诊断仍会输出。GPU 测试默认关闭，`camera_math` 在构建应用且启用 `BUILD_TESTING` 时注册。完整应用套件包含六项 CPU 模拟 / 场景测试与 `camera_math`，启用 GPU 测试后再加入三项呈现测试，合计十项；单独模拟构建运行上述六项 CPU 测试。
+三个 GPU 呈现测试会短暂创建窗口并自动缩放，测试的是渲染路径，当前模拟仍使用 CPU。CTest 会检查输出，在任何 `[Vulkan validation]` 消息（包括资源销毁时的消息）出现时失败；Loader 的一般诊断仍会输出。GPU 测试默认关闭，`camera_math` 在构建应用且启用 `BUILD_TESTING` 时注册。完整应用套件包含八项 CPU 模拟 / 场景测试与 `camera_math`，启用 GPU 测试后再加入三项呈现测试，合计十二项；单独模拟构建运行上述八项 CPU 测试。
 
 需要额外复查同步时，可在当前 PowerShell 会话设置 `$env:VK_LAYER_VALIDATE_SYNC = '1'` 后运行 `ctest --preset debug`，完成后以 `Remove-Item Env:VK_LAYER_VALIDATE_SYNC` 清除该会话设置。
 
@@ -171,8 +192,8 @@ ctest --test-dir build-host-x64 -C Release --output-on-failure
 | 位置 | 当前职责 |
 | --- | --- |
 | `src/core/` | Window / Context；带逐图像深度附件的 Swapchain；共享命令记录、双帧同步与呈现的 FrameRenderer；Pipeline / Buffer / Descriptor；Camera、TriangleRenderer、ParticleRenderer、LineRenderer、ImGuiLayer |
-| `src/sim/` | `Agent`、`World`、`Rule`、`Intervention`、`Simulation` 和后端枚举；`cpu/` 下为 SpatialHash 与 CpuSimulation |
-| `src/scenarios/boids/` | 纯 CPU 的三规则、BoidsScene、光标干预及测试；LiveBoids 连接模拟 / 渲染 / 面板，保留程序化预览与三类呈现测试 |
+| `src/sim/` | `Agent`、`World`、`Rule`、`Intervention`、`Simulation` 和后端枚举；`cpu/` 下为 SpatialHash、RuleKernel 接口与 CpuSimulation |
+| `src/scenarios/boids/` | 纯 CPU 的三规则、BoidsRuleKernel、BoidsScene、光标干预及测试；LiveBoids 连接模拟 / 渲染 / 面板，保留程序化预览与三类呈现测试 |
 | `shaders/` | `particle.*` 粒子、`grid.*` 辅助线及 `smoke/triangle.*` 三角形着色器 |
 | `cmake/` | 依赖获取与着色器编译辅助配置 |
 | `third_party/` | 第三方依赖说明；实际源码由 FetchContent 放入构建目录 |

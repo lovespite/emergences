@@ -9,6 +9,7 @@
 #include <glm/geometric.hpp>
 
 #include "scenarios/boids/Alignment.h"
+#include "scenarios/boids/BoidsRuleKernel.h"
 #include "scenarios/boids/Cohesion.h"
 #include "scenarios/boids/Separation.h"
 
@@ -40,6 +41,7 @@ BoidsScene::BoidsScene(std::size_t count, std::uint32_t seed)
     simulation_.rules().push_back(std::make_unique<Separation>());
     simulation_.rules().push_back(std::make_unique<Alignment>());
     simulation_.rules().push_back(std::make_unique<Cohesion>());
+    simulation_.setRuleKernel(std::make_unique<BoidsRuleKernel>());
     refreshColors(colorMode_);
 }
 
