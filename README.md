@@ -1,8 +1,8 @@
 # emergences · 涌现模拟
 
-基于 C++20 和 Vulkan 的涌现模拟项目。项目按通用渲染层、通用模拟层和具体场景三层组织，已接入 Boids 鸟群与 Ant Colony 蚁群两个场景。完整方案见 [PLAN.md](PLAN.md)。
+基于 C++20 和 Vulkan 的涌现模拟项目。项目按通用渲染层、通用模拟层和具体场景三层组织，已接入 Boids 鸟群、Ant Colony 蚁群与 Particle Life 三个场景。完整方案见 [PLAN.md](PLAN.md)。
 
-**Phase 1–4 已实现，并接入蚁群场景。** 默认应用运行 GPU compute Boids，可在面板切回 CPU 使用光标吸引 / 排斥，也可通过 **Scene → Ant Colony** 切换到蚁群。Boids 两种后端共用规则参数、固定步长和显示控制。GPU 使用均匀网格和计算着色器，显示结果直接绑定 Vulkan 粒子渲染；GPU 初始化失败时回退 CPU，并在面板显示原因。蚁群采用 CPU 模拟，支持随机地形障碍、随机食物、敌对生物追踪、觅食归巢与双信息素轨迹。模拟与场景库仍可独立于 Vulkan 构建和测试。
+**Phase 1–4 已实现，并接入蚁群与 Particle Life 场景。** 默认应用运行 GPU compute Boids，可在面板切回 CPU 使用光标吸引 / 排斥，也可通过 **Scene** 菜单切换到蚁群或 Particle Life。Boids 两种后端共用规则参数、固定步长和显示控制。GPU 使用均匀网格和计算着色器，显示结果直接绑定 Vulkan 粒子渲染；GPU 初始化失败时回退 CPU，并在面板显示原因。蚁群采用 CPU 模拟，支持随机地形障碍、随机食物、敌对生物追踪、觅食归巢与双信息素轨迹。Particle Life 通过可编辑的物种吸引／排斥矩阵模拟粒子聚集与追逐。模拟与场景库仍可独立于 Vulkan 构建和测试。
 
 ## 构建前置
 
@@ -109,7 +109,7 @@ cmake --build --preset debug
 
 ### 蚁群场景
 
-在面板顶部选择 **Scene → Ant Colony**，或使用 `emergences.exe --ants` 直接启动蚁群。两个场景共用窗口、相机操作和呈现框架；切换时保留各自的个体、参数、暂停状态与模拟时钟，未显示的场景停止推进。
+在面板顶部选择 **Scene → Ant Colony**，或使用 `emergences.exe --ants` 直接启动蚁群。各场景共用窗口、相机操作和呈现框架；切换时保留各自的个体、参数、暂停状态与模拟时钟，未显示的场景停止推进。
 
 蚁群默认包含 **1500 只蚂蚁**，数量可调至 0–20000，采用 CPU 固定步长模拟。世界位于 `[-80,80]` 的 XZ 平面，尺寸为 **160×160**，长宽均为原来的两倍；信息素使用 256×256 网格，保持原有空间精度。蚁巢在中央；种子生成六片食物和三个敌对生物。敌对生物每 **0.5 秒**重新评估 **40 单位**范围内的蚁群，以半径 **6 单位**的邻域统计密度，优先追踪密集区域，并通过 **A\*** 寻路绕过石块。无目标时继续游走，蚁巢周围半径 **9 单位**保留保护范围。蚂蚁探索、拾取食物并送回蚁巢，接近敌对生物时转向避让；当前敌对生物只影响行进路线，没有战斗或死亡机制。
 
@@ -124,9 +124,22 @@ cmake --build --preset debug
 - **Behavior**：调整移动速度、传感距离 / 角度、转向、探索扰动，以及信息素沉积、挥发、扩散；**Clear pheromones** 只清除两种轨迹，保留当前世界和时钟。
 - **View**：分别显示蓝色归巢信息素和绿色食物信息素，调整蚂蚁大小、抗锯齿、网格 / 边界及相机。面板同时显示携带食物的蚂蚁数、已送达食物、剩余食物和敌对生物数量。
 
+### Particle Life 场景
+
+在面板顶部选择 **Scene → Particle Life**，或以 `emergences --particle-life`（Windows 使用 `emergences.exe`）直接启动。默认 **2000 个粒子、6 个物种**，在 **100×100** 的 XZ 平面周期空间中运行，支持 0–10000 个粒子和 1–8 个物种。复用现有 Vulkan 圆点渲染、相机、抗锯齿和场景切换，模拟使用 CPU 空间哈希与 120 Hz 固定步长。
+
+所有粒子在近距离互相排斥，避免塌缩；在其余作用半径内，物种矩阵决定吸引或排斥，强度随距离呈三角形变化，超出半径后不再作用。矩阵的**行是受力物种、列是施力物种**，正值吸引、负值排斥；矩阵不必对称，因此可以出现一个物种追逐另一个物种的运动。模型参考 [Particle Life 官方框架的力函数说明](https://particle-life.com/java-framework/getting-started.html)。默认矩阵保留同类吸引，便于观察聚集；具体形态会随参数和矩阵变化。
+
+- **Paused / Step / Reset**：暂停、单步、按当前种子恢复初始粒子；重置保留规则矩阵、参数和暂停状态。
+- 调整粒子数、物种数、种子，以及作用半径、作用强度、阻尼、近距排斥、核心距离比例和速度上限。数量、物种数和种子变化会重新生成粒子。
+- 彩色作用矩阵可逐格编辑，并可随机生成新的非对称规则；更改规则会作用于当前粒子。物种颜色同时用于矩阵和渲染。
+- 粒子大小、网格、边界、抗锯齿和相机均可调；切换到其他场景时冻结当前模拟，切回来继续。
+
+设置保存为 `app.scenario = particle_life` 和 `scenarios.particle_life.*`，包括所有 8×8 矩阵值；重启恢复参数及规则，从种子重新生成初始粒子。呈现回归可使用 `emergences --particle-life-smoke-test`，覆盖粒子数量、物种数、矩阵修改、暂停／单步／重置、三个场景切换、帧预算、窗口大小、全屏、F1 和 MSAA。
+
 ### 配置文件与设置记忆
 
-交互启动时自动读取**可执行文件旁的 `emergences.conf`**，与启动时的工作目录无关。首次运行会生成完整配置；面板、快捷键和相机操作产生的设置修改每秒检查一次，有变化才写入，正常退出时再保存一次。下次启动恢复当前场景、Boids 参数、CPU / GPU 选择、蚁群参数和已应用种子、暂停、光标力、全屏、面板显隐、形状、颜色、大小、抗锯齿、网格 / 边界及相机位置。记忆的是设置，个体位置、食物消耗、信息素与模拟时间仍从初始状态开始。
+交互启动时自动读取**可执行文件旁的 `emergences.conf`**，与启动时的工作目录无关。首次运行会生成完整配置；面板、快捷键和相机操作产生的设置修改每秒检查一次，有变化才写入，正常退出时再保存一次。下次启动恢复当前场景、Boids 参数、CPU / GPU 选择、蚁群参数和已应用种子、Particle Life 参数及作用矩阵、暂停、光标力、全屏、面板显隐、形状、颜色、大小、抗锯齿、网格 / 边界及相机位置。记忆的是设置，个体位置、食物消耗、信息素与模拟时间仍从初始状态开始。
 
 文件采用点路径与 `key = value` 格式，例如：
 
@@ -332,8 +345,9 @@ ctest --test-dir build-host-x64 -C Release --output-on-failure
 | `src/config/` | 独立于 Vulkan 的点路径配置解析、校验与原子保存；支持设置记忆和注释保留 |
 | `src/core/` | Window / Context；带逐图像深度附件的 Swapchain；共享命令记录、双帧同步与呈现的 FrameRenderer；Pipeline / Buffer / Descriptor、VulkanComputeDevice；Camera、TriangleRenderer、ParticleRenderer、LineRenderer、ImGuiLayer |
 | `src/sim/` | `Agent`、`World`、`Rule`、`Intervention`、`Simulation`、`MotionLimits`、`ComputeDevice`；`cpu/` 下为 SpatialHash、RuleKernel 与 CpuSimulation，`gpu/` 下为 GpuSimulation |
-| `src/scenarios/boids/` | 纯 CPU 的三规则、BoidsRuleKernel、BoidsScene、光标干预及测试；LiveBoids 管理 Boids / 蚁群切换并连接模拟 / 渲染 / 面板，保留程序化预览与呈现测试 |
+| `src/scenarios/boids/` | 纯 CPU 的三规则、BoidsRuleKernel、BoidsScene、光标干预及测试；LiveBoids 管理 Boids / 蚁群 / Particle Life 切换并连接模拟 / 渲染 / 面板，保留程序化预览与呈现测试 |
 | `src/scenarios/ants/` | 无 Vulkan 依赖的 AntScene、双信息素场、随机地形、食物和敌对生物及测试；AntPresentation 负责蚁群面板、设置转换和渲染记录 |
+| `src/scenarios/particle_life/` | 无 Vulkan 依赖的多物种 ParticleLifeScene、分段作用力、周期邻域和测试；ParticleLifePresentation 负责作用矩阵面板、设置转换和渲染记录 |
 | `shaders/` | `particle.*` 粒子、`grid.*` 辅助线、`smoke/triangle.*` 三角形及 `compute/boids.comp` 计算着色器 |
 | `cmake/` | 依赖获取与着色器编译辅助配置 |
 | `third_party/` | 第三方依赖说明；实际源码由 FetchContent 放入构建目录 |

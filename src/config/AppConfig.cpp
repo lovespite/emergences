@@ -29,22 +29,23 @@ namespace {
 using Value = std::variant<bool*, int*, float*>;
 
 struct Field {
-    std::string_view key;
+    std::string key;
     Value value;
     float minimum = 0.0F;
     float maximum = 0.0F;
-    std::string_view choices;
+    std::string_view choices{};
 };
 
 std::vector<Field> fields(Settings& settings) {
     auto& b = settings.boids;
     auto& a = settings.ants;
+    auto& life = settings.particleLife;
     auto& v = settings.view;
     auto& c = settings.camera;
     auto& p = settings.preview;
     constexpr float pi = 3.14159265358979323846F;
-    return {
-        {"app.scenario", &settings.scenario, 0.0F, 0.0F, "boids|ants"},
+    std::vector<Field> result{
+        {"app.scenario", &settings.scenario, 0.0F, 0.0F, "boids|ants|particle_life"},
         {"scenarios.boids.count", &b.count, 0.0F, 100000.0F},
         {"scenarios.boids.backend", &b.gpu, 0.0F, 0.0F, "cpu|gpu"},
         {"scenarios.boids.paused", &b.paused},
@@ -79,6 +80,18 @@ std::vector<Field> fields(Settings& settings) {
         {"scenarios.ants.show_food_pheromone", &a.showFoodPheromone},
         {"scenarios.ants.agent_size", &a.agentSize, 0.1F, 1.5F},
         {"scenarios.ants.food_spawn_interval", &a.foodSpawnInterval, 1.0F, 120.0F},
+        {"scenarios.particle_life.count", &life.count, 0.0F, 10000.0F},
+        {"scenarios.particle_life.seed", &life.seed, 0.0F, static_cast<float>(std::numeric_limits<int>::max())},
+        {"scenarios.particle_life.species_count", &life.speciesCount, 1.0F, 8.0F},
+        {"scenarios.particle_life.paused", &life.paused},
+        {"scenarios.particle_life.interaction_radius", &life.interactionRadius, 1.0F, 30.0F},
+        {"scenarios.particle_life.force", &life.force, 0.0F, 100.0F},
+        {"scenarios.particle_life.friction", &life.friction, 0.0F, 20.0F},
+        {"scenarios.particle_life.repulsion", &life.repulsion, 0.0F, 5.0F},
+        {"scenarios.particle_life.core_ratio", &life.coreRatio, 0.05F, 0.8F},
+        {"scenarios.particle_life.max_speed", &life.maxSpeed, 1.0F, 100.0F},
+        {"scenarios.particle_life.agent_size", &life.agentSize, 0.1F, 1.5F},
+        {"scenarios.particle_life.custom_matrix", &life.customMatrix},
         {"view.fullscreen", &v.fullscreen},
         {"view.panel_visible", &v.panelVisible},
         {"view.antialiasing", &v.antialiasing},
@@ -98,6 +111,14 @@ std::vector<Field> fields(Settings& settings) {
         {"scenarios.preview.color", &p.colorMode, 0.0F, 0.0F, "direction|speed|solid"},
         {"scenarios.preview.agent_size", &p.agentSize, 0.15F, 1.8F},
     };
+    for (std::size_t row = 0; row < 8; ++row) {
+        for (std::size_t column = 0; column < 8; ++column) {
+            result.push_back({"scenarios.particle_life.matrix." + std::to_string(row) + "." +
+                                  std::to_string(column),
+                              &life.matrix[row * 8 + column], -1.0F, 1.0F});
+        }
+    }
+    return result;
 }
 
 std::string_view trim(std::string_view text) {

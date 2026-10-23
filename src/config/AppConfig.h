@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -48,6 +49,25 @@ struct AntSettings {
     bool operator==(const AntSettings&) const = default;
 };
 
+struct ParticleLifeSettings {
+    int count = 2000;
+    int seed = 12345;
+    int speciesCount = 6;
+    bool paused = false;
+    float interactionRadius = 12.0F;
+    float force = 30.0F;
+    float friction = 4.0F;
+    float repulsion = 2.0F;
+    float coreRatio = 0.3F;
+    float maxSpeed = 20.0F;
+    float agentSize = 0.6F;
+    // The scenario supplies its initial rules unless a saved matrix is selected.
+    bool customMatrix = false;
+    // Row = receiving species, column = source species, fixed row stride of 8.
+    std::array<float, 64> matrix{};
+    bool operator==(const ParticleLifeSettings&) const = default;
+};
+
 struct ViewSettings {
     bool fullscreen = false;
     bool panelVisible = true;
@@ -82,6 +102,7 @@ struct Settings {
     int scenario = 0;
     BoidsSettings boids;
     AntSettings ants;
+    ParticleLifeSettings particleLife;
     ViewSettings view;
     CameraSettings camera;
     PreviewSettings preview;

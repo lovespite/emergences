@@ -15,7 +15,7 @@
 
 # ── 启动场景 ────────────────────────────────────────────────────────
 
-# 正常启动时选中的场景。可选 boids（默认）或 ants（蚁群）。
+# 正常启动时选中的场景。可选 boids（默认）、ants（蚁群）或 particle_life（粒子生命）。
 # 运行中可以在控制面板切换；每个场景的参数独立保存，显示选项和相机共用。
 # --render-preview 仍进入程序化预览，不受此选项影响。
 app.scenario = boids
@@ -180,11 +180,129 @@ scenarios.ants.show_food_pheromone = on
 # 蚂蚁的显示尺寸缩放系数。范围 0.1..1.5，默认 0.5；不改变感知和移动行为。
 scenarios.ants.agent_size = 0.5
 
+# ── Particle Life 场景：种类与运行状态 ──────────────────────────────
+# 粒子在水平 XZ 平面上活动，X、Z 范围均为 [-50, 50)，按有向种类规则形成团簇与运动结构。
+# 使用周期边界，越过世界一侧的粒子从相对侧返回，边缘邻居按最短周期距离相互作用。
+# 参数、种子和规则矩阵会保存；每次启动重新生成粒子的位置与速度。
+
+# 粒子数量。整数范围 0..10000，默认 2000；0 表示空场景。
+scenarios.particle_life.count = 2000
+
+# 粒子种子。整数范围 0..2147483647，默认 12345；用于复现初始粒子布局。
+# 默认规则固定；面板的 Rule seed 独立生成规则，保存的是完整矩阵。
+scenarios.particle_life.seed = 12345
+
+# 粒子种类数。整数范围 1..8，默认 6；各类使用独立颜色。
+# 矩阵固定保存 8×8 项，当前仅使用前 species_count 行与列。
+scenarios.particle_life.species_count = 6
+
+# 是否暂停粒子生命模拟。on/off，默认 off；与其他场景的暂停状态独立。
+scenarios.particle_life.paused = off
+
+# ── Particle Life 场景：作用力与显示 ────────────────────────────────
+
+# 相互作用半径，单位为世界单位。范围 1..30，默认 12；范围外的粒子不产生作用力。
+scenarios.particle_life.interaction_radius = 12
+
+# 作用力整体强度。范围 0..100，默认 30；0 关闭粒子间的作用力。
+scenarios.particle_life.force = 30
+
+# 速度衰减系数。范围 0..20，默认 4；越大阻尼越强，0 不衰减速度。
+scenarios.particle_life.friction = 4
+
+# 核心区域的排斥强度。范围 0..5，默认 2；防止粒子因吸引而无限聚集。
+scenarios.particle_life.repulsion = 2
+
+# 核心区域半径相对 interaction_radius 的比例。范围 0.05..0.8，默认 0.3。
+# 核心内各类粒子统一排斥，核心外至作用半径之间采用下方规则矩阵。
+scenarios.particle_life.core_ratio = 0.3
+
+# 速度上限，单位为世界单位/模拟秒。范围 1..100，默认 20。
+scenarios.particle_life.max_speed = 20
+
+# 粒子的显示尺寸缩放系数。范围 0.1..1.5，默认 0.6；只改变外观，不改变作用力。
+scenarios.particle_life.agent_size = 0.6
+
+# ── Particle Life 场景：有向规则矩阵 ────────────────────────────────
+# off（默认）使用场景生成的初始规则；on 使用本文件中的 matrix 行列值。
+# 程序保存当前规则时会设为 on，以便下次启动恢复面板中调整过的矩阵。
+# 手工修改 matrix 时请同时设为 on；设回 off 可在下次启动重新生成默认规则。
+scenarios.particle_life.custom_matrix = off
+
+# 键名 matrix.行.列：行是受力粒子的种类，列是施力邻居的种类，编号均为 0..7。
+# 每项范围 -1..1：正值吸引、负值排斥、0 无矩阵作用力；近距离核心排斥仍然生效。
+# matrix.0.1 控制种类 0 对种类 1 的反应，与 matrix.1.0 无需相等。
+# 缺失项默认 0；下列零矩阵在 custom_matrix=off 时不生效。
+scenarios.particle_life.matrix.0.0 = 0
+scenarios.particle_life.matrix.0.1 = 0
+scenarios.particle_life.matrix.0.2 = 0
+scenarios.particle_life.matrix.0.3 = 0
+scenarios.particle_life.matrix.0.4 = 0
+scenarios.particle_life.matrix.0.5 = 0
+scenarios.particle_life.matrix.0.6 = 0
+scenarios.particle_life.matrix.0.7 = 0
+scenarios.particle_life.matrix.1.0 = 0
+scenarios.particle_life.matrix.1.1 = 0
+scenarios.particle_life.matrix.1.2 = 0
+scenarios.particle_life.matrix.1.3 = 0
+scenarios.particle_life.matrix.1.4 = 0
+scenarios.particle_life.matrix.1.5 = 0
+scenarios.particle_life.matrix.1.6 = 0
+scenarios.particle_life.matrix.1.7 = 0
+scenarios.particle_life.matrix.2.0 = 0
+scenarios.particle_life.matrix.2.1 = 0
+scenarios.particle_life.matrix.2.2 = 0
+scenarios.particle_life.matrix.2.3 = 0
+scenarios.particle_life.matrix.2.4 = 0
+scenarios.particle_life.matrix.2.5 = 0
+scenarios.particle_life.matrix.2.6 = 0
+scenarios.particle_life.matrix.2.7 = 0
+scenarios.particle_life.matrix.3.0 = 0
+scenarios.particle_life.matrix.3.1 = 0
+scenarios.particle_life.matrix.3.2 = 0
+scenarios.particle_life.matrix.3.3 = 0
+scenarios.particle_life.matrix.3.4 = 0
+scenarios.particle_life.matrix.3.5 = 0
+scenarios.particle_life.matrix.3.6 = 0
+scenarios.particle_life.matrix.3.7 = 0
+scenarios.particle_life.matrix.4.0 = 0
+scenarios.particle_life.matrix.4.1 = 0
+scenarios.particle_life.matrix.4.2 = 0
+scenarios.particle_life.matrix.4.3 = 0
+scenarios.particle_life.matrix.4.4 = 0
+scenarios.particle_life.matrix.4.5 = 0
+scenarios.particle_life.matrix.4.6 = 0
+scenarios.particle_life.matrix.4.7 = 0
+scenarios.particle_life.matrix.5.0 = 0
+scenarios.particle_life.matrix.5.1 = 0
+scenarios.particle_life.matrix.5.2 = 0
+scenarios.particle_life.matrix.5.3 = 0
+scenarios.particle_life.matrix.5.4 = 0
+scenarios.particle_life.matrix.5.5 = 0
+scenarios.particle_life.matrix.5.6 = 0
+scenarios.particle_life.matrix.5.7 = 0
+scenarios.particle_life.matrix.6.0 = 0
+scenarios.particle_life.matrix.6.1 = 0
+scenarios.particle_life.matrix.6.2 = 0
+scenarios.particle_life.matrix.6.3 = 0
+scenarios.particle_life.matrix.6.4 = 0
+scenarios.particle_life.matrix.6.5 = 0
+scenarios.particle_life.matrix.6.6 = 0
+scenarios.particle_life.matrix.6.7 = 0
+scenarios.particle_life.matrix.7.0 = 0
+scenarios.particle_life.matrix.7.1 = 0
+scenarios.particle_life.matrix.7.2 = 0
+scenarios.particle_life.matrix.7.3 = 0
+scenarios.particle_life.matrix.7.4 = 0
+scenarios.particle_life.matrix.7.5 = 0
+scenarios.particle_life.matrix.7.6 = 0
+scenarios.particle_life.matrix.7.7 = 0
+
 # ── 显示选项 ────────────────────────────────────────────────────────
-# 全屏、面板、抗锯齿、网格、边界及相机由 Boids、蚁群和程序化预览共用。
+# 全屏、面板、抗锯齿、网格、边界及相机由 Boids、蚁群、粒子生命和程序化预览共用。
 # 绘制形状由 Boids 和预览共用；蚁群始终使用按运动方向转动的蚂蚁轮廓。
-# Boids 的尺寸和颜色由 view.agent_size/view.color 控制，蚁群和预览使用独立尺寸项。
-# 蚁群根据觅食、搬运等状态着色，不使用 view.color。
+# Boids 的尺寸和颜色由 view.agent_size/view.color 控制，其他场景使用独立尺寸项。
+# 蚁群根据觅食、搬运等状态着色，粒子生命按种类着色，均不使用 view.color。
 
 # 是否全屏。on/off，默认 off；本示例为 on。运行中按 F11 或用面板开关切换。
 # 全屏使用窗口所在的显示器；同一次运行中退出全屏会恢复原窗口位置和尺寸。

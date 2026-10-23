@@ -707,7 +707,12 @@ void AntScene::step() {
             const float forward = sense(heading);
             const float right = sense(heading + parameters_.sensorAngle);
             float sensedHeading = heading;
-            if (left > forward + 1.0e-5F && left > right + 1.0e-5F) {
+            const float current = sampleField(targetField, ant.position);
+            // A relative winner can still point downhill at an old trail peak.
+            // Cross such peaks and resume exploration instead of orbiting them.
+            if (std::max({left, forward, right}) <= current + 1.0e-5F) {
+                sensedHeading += noise(seed_, ant.id, totalSteps_) * parameters_.wander * StepSeconds;
+            } else if (left > forward + 1.0e-5F && left > right + 1.0e-5F) {
                 sensedHeading -= maximumTurn;
             } else if (right > forward + 1.0e-5F && right > left + 1.0e-5F) {
                 sensedHeading += maximumTurn;

@@ -3,6 +3,8 @@
 #include "scenarios/boids/BoidsConfig.h"
 #include "scenarios/ants/AntScene.h"
 #include "scenarios/ants/AntPresentation.h"
+#include "scenarios/particle_life/ParticleLifeScene.h"
+#include "scenarios/particle_life/ParticleLifePresentation.h"
 #include "config/AppConfig.h"
 #include "scenarios/boids/BoidsGpu.h"
 #include "scenarios/boids/CursorAttract.h"
@@ -37,6 +39,7 @@ namespace {
 struct Controls {
     int scenario = 0;
     config::AntSettings ants;
+    config::ParticleLifeSettings particleLife;
     bool preferGpu = true;
     bool panelVisible = true;
     int shape = 0;
@@ -72,7 +75,8 @@ bool slider(const char* label, float& value, float minimum, float maximum) {
     return value != old;
 }
 
-Actions drawPanel(BoidsScene& scene, ants::AntScene& antScene, Controls& controls, core::Camera& camera,
+Actions drawPanel(BoidsScene& scene, ants::AntScene& antScene,
+                  particle_life::ParticleLifeScene& particleLifeScene, Controls& controls, core::Camera& camera,
                   const core::Context& context, const core::FrameRenderer& renderer,
                   bool& fullscreen, const config::ConfigFile* config) {
     Actions actions;
@@ -81,16 +85,18 @@ Actions drawPanel(BoidsScene& scene, ants::AntScene& antScene, Controls& control
         std::min(690.0F, ImGui::GetIO().DisplaySize.y - 36.0F))), ImGuiCond_Always);
     ImGui::Begin("Emergences", nullptr, ImGuiWindowFlags_NoResize);
     ImGui::TextColored(ImVec4(0.3F, 0.8F, 0.95F, 1.0F), "%s",
-        controls.scenario == 1 ? "ANT COLONY / LIVE ECOSYSTEM" : "LIVE BOIDS");
+        controls.scenario == 1 ? "ANT COLONY / LIVE ECOSYSTEM" :
+        controls.scenario == 2 ? "PARTICLE LIFE / EMERGENT SYSTEMS" : "LIVE BOIDS");
     ImGui::Checkbox("Fullscreen (F11)", &fullscreen);
     ImGui::SameLine();
     ImGui::TextDisabled("F1: hide panel");
-    if (ImGui::Combo("Scene", &controls.scenario, "Boids\0Ant Colony\0")) {
+    if (ImGui::Combo("Scene", &controls.scenario, "Boids\0Ant Colony\0Particle Life\0")) {
         actions.skipElapsed = true;
         if (controls.scenario == 1) ants::resetAntCamera(camera);
+        else if (controls.scenario == 2) particle_life::resetParticleLifeCamera(camera);
         else camera.reset();
     }
-    if (controls.scenario == 1) {
+    if (controls.scenario == 1 || controls.scenario == 2) {
         if (config) {
             if (!config->lastError().empty()) ImGui::TextWrapped("Settings: %s", config->lastError().c_str());
             if (!config->warnings().empty() && ImGui::TreeNode("Settings warnings")) {
@@ -98,17 +104,26 @@ Actions drawPanel(BoidsScene& scene, ants::AntScene& antScene, Controls& control
                 ImGui::TreePop();
             }
         }
-        const auto antActions = ants::drawAntControls(antScene, controls.ants, camera, renderer,
-            controls.antialiasing, controls.grid, controls.bounds);
-        actions.reset = antActions.reset;
-        actions.step = antActions.step;
-        actions.skipElapsed |= antActions.skipElapsed;
+        if (controls.scenario == 1) {
+            const auto panel = ants::drawAntControls(antScene, controls.ants, camera, renderer,
+                controls.antialiasing, controls.grid, controls.bounds);
+            actions.reset = panel.reset;
+            actions.step = panel.step;
+            actions.skipElapsed |= panel.skipElapsed;
+        } else {
+            const auto panel = particle_life::drawParticleLifeControls(particleLifeScene,
+                controls.particleLife, camera, renderer, controls.antialiasing, controls.grid, controls.bounds);
+            actions.reset = panel.reset;
+            actions.step = panel.step;
+            actions.skipElapsed |= panel.skipElapsed;
+        }
         ImGui::Separator();
         ImGui::TextDisabled("Left drag: orbit | Middle drag: pan");
         ImGui::TextDisabled("Wheel: zoom | Escape: close");
         ImGui::Text("%.1f FPS | simulation %.2f ms (%zu steps)", static_cast<double>(ImGui::GetIO().Framerate),
             static_cast<double>(controls.simulationMs), controls.simulationSteps);
-        if (controls.simulationLimited && !antScene.paused())
+        const bool paused = controls.scenario == 1 ? antScene.paused() : particleLifeScene.paused();
+        if (controls.simulationLimited && !paused)
             ImGui::TextColored(ImVec4(1, 0.75F, 0.35F, 1), "Simulation slowed to keep controls responsive.");
         else ImGui::TextDisabled("Inactive scenes keep their state.");
         ImGui::TextDisabled("%s", context.deviceName().c_str());
@@ -430,10 +445,11 @@ void gpuSmokeSettings(std::size_t frame, BoidsScene& scene, Controls& controls, 
 } // namespace
 
 int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, bool gpuSmokeTest,
-                  config::ConfigFile* config, bool startAnts, bool antsSmokeTest) {
-    const bool anySmokeTest = smokeTest || gpuSmokeTest || antsSmokeTest;
+                  config::ConfigFile* config, bool startAnts, bool antsSmokeTest,
+                  bool startParticleLife, bool particleLifeSmokeTest) {
+    const bool anySmokeTest = smokeTest || gpuSmokeTest || antsSmokeTest || particleLifeSmokeTest;
     if (anySmokeTest) config = nullptr;
-    core::Window window{1280, 800, "Emergences | Boids & Ant Colony"};
+    core::Window window{1280, 800, "Emergences | Boids, Ant Colony & Particle Life"};
     if (config) window.setFullscreen(config->settings().view.fullscreen);
     core::Context context{window};
     std::cout << "Vulkan initialized on: " << context.deviceName() << '\n';
@@ -454,24 +470,31 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
     bool observedFoodTrail = false;
     bool observedSceneSwitch = false;
     std::uint64_t inactiveAntSteps = 0;
+    bool observedParticleLifeMotion = false;
+    std::uint64_t inactiveParticleLifeSteps = 0;
     {
         core::VulkanComputeDevice compute{context};
         core::ParticleRenderer particles{context, shaderDirectory};
         core::ParticleRenderer environmentParticles{context, shaderDirectory};
         core::LineRenderer lines{context, shaderDirectory};
         core::LineRenderer antLines{context, shaderDirectory, true, ants::AntScene::WorldHalfExtent};
+        core::LineRenderer particleLifeLines{context, shaderDirectory, true,
+            particle_life::ParticleLifeScene::WorldHalfExtent};
         core::ImGuiLayer ui{context, window};
         // Submission owner dies first, waiting while all recorded resources live.
         core::FrameRenderer renderer{context, window};
         core::Camera camera;
         BoidsScene scene;
         ants::AntScene antScene;
+        particle_life::ParticleLifeScene particleLifeScene;
         Controls controls;
         if (config) {
             const auto& settings = config->settings();
             controls.scenario = settings.scenario;
             controls.ants = settings.ants;
             ants::applyAntSettings(antScene, settings.ants);
+            controls.particleLife = settings.particleLife;
+            particle_life::applyParticleLifeSettings(particleLifeScene, settings.particleLife);
             applyBoidsSettings(scene, settings.boids);
             controls.preferGpu = settings.boids.gpu;
             controls.panelVisible = settings.view.panelVisible;
@@ -493,6 +516,10 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
         if (startAnts || antsSmokeTest) {
             if (controls.scenario != 1 || !config) ants::resetAntCamera(camera);
             controls.scenario = 1;
+        }
+        if (startParticleLife || particleLifeSmokeTest) {
+            if (controls.scenario != 2 || !config) particle_life::resetParticleLifeCamera(camera);
+            controls.scenario = 2;
         }
         try {
             scene.initializeGpu(compute, (shaderDirectory / "compute/boids.comp.spv").string());
@@ -517,6 +544,8 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
             settings.scenario = controls.scenario;
             ants::captureAntSettings(antScene, controls.ants);
             settings.ants = controls.ants;
+            particle_life::captureParticleLifeSettings(particleLifeScene, controls.particleLife);
+            settings.particleLife = controls.particleLife;
             captureBoidsSettings(scene, settings.boids);
             settings.boids.gpu = controls.preferGpu;
             settings.boids.cursor = controls.cursor;
@@ -562,6 +591,7 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
                     environmentParticles.configure(pass, renderer.sampleCount());
                     lines.configure(pass, renderer.sampleCount());
                     antLines.configure(pass, renderer.sampleCount());
+                    particleLifeLines.configure(pass, renderer.sampleCount());
                     ui.configure(pass, imageCount, renderer.sampleCount());
                 },
                 [&](VkCommandBuffer commands, VkExtent2D extent, std::size_t frame) {
@@ -587,6 +617,47 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
                     Actions actions;
                     if (smokeTest) smokeSettings(presentedFrames, scene, controls, camera, actions);
                     if (gpuSmokeTest) gpuSmokeSettings(presentedFrames, scene, controls, actions);
+                    if (particleLifeSmokeTest) {
+                        if (presentedFrames == 1) particleLifeScene.setCount(0);
+                        if (presentedFrames == 2) particleLifeScene.setCount(1);
+                        if (presentedFrames == 3) particleLifeScene.setCount(257);
+                        if (presentedFrames == 4) particleLifeScene.setCount(2000);
+                        if (presentedFrames == 6) particleLifeScene.setSpeciesCount(8);
+                        if (presentedFrames == 8) particleLifeScene.setPaused(true);
+                        if (presentedFrames == 9) actions.step = true;
+                        if (presentedFrames == 10) particleLifeScene.setPaused(false);
+                        if (presentedFrames == 12) {
+                            particleLifeScene.setSeed(729U);
+                            particleLifeScene.randomizeMatrix(42U);
+                            actions.skipElapsed = true;
+                        }
+                        if (presentedFrames == 18) {
+                            particleLifeScene.setInteraction(0, 1, 0.85F);
+                            particleLifeScene.setInteraction(1, 0, -0.65F);
+                            require(particleLifeScene.matrix()[1] == 0.85F &&
+                                particleLifeScene.matrix()[particle_life::ParticleLifeScene::MaxSpecies] == -0.65F,
+                                "Particle Life matrix lost directional interactions");
+                        }
+                        if (presentedFrames == 24) actions.reset = true;
+                        if (presentedFrames == 28) particleLifeScene.setSpeciesCount(6);
+                        if (presentedFrames == 32) {
+                            inactiveParticleLifeSteps = particleLifeScene.totalSteps();
+                            controls.scenario = 0;
+                            scene.setPaused(true);
+                        }
+                        if (presentedFrames == 34) {
+                            require(particleLifeScene.totalSteps() == inactiveParticleLifeSteps,
+                                "Inactive Particle Life advanced while showing Boids");
+                            controls.scenario = 1;
+                            antScene.setPaused(true);
+                        }
+                        if (presentedFrames == 36) {
+                            require(particleLifeScene.totalSteps() == inactiveParticleLifeSteps,
+                                "Inactive Particle Life advanced while showing ants");
+                            controls.scenario = 2;
+                            observedSceneSwitch = true;
+                        }
+                    }
                     if (antsSmokeTest) {
                         if (presentedFrames == 1) antScene.setCount(0);
                         if (presentedFrames == 2) antScene.setCount(1);
@@ -622,7 +693,8 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
                         controls.ants.showFoodPheromone = presentedFrames < 28 || presentedFrames >= 30;
                     }
                     if (controls.panelVisible) {
-                        const auto panelActions = drawPanel(scene, antScene, controls, camera, context, renderer, fullscreen, config);
+                        const auto panelActions = drawPanel(scene, antScene, particleLifeScene,
+                            controls, camera, context, renderer, fullscreen, config);
                         actions.reset |= panelActions.reset;
                         actions.step |= panelActions.step;
                         actions.skipElapsed |= panelActions.skipElapsed;
@@ -641,6 +713,62 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
                         camera.zoom(ui.wheelDelta());
                     }
                     const float aspect = static_cast<float>(extent.width) / static_cast<float>(extent.height);
+                    if (controls.scenario == 2) {
+                        repel.setEnabled(false);
+                        attract.setEnabled(false);
+                        const auto stepsBefore = particleLifeScene.totalSteps();
+                        const auto oldAgents = particleLifeScene.agents();
+                        const auto firstPosition = oldAgents.empty() ? glm::vec3{0} : oldAgents.front().position;
+                        const auto started = std::chrono::steady_clock::now();
+                        controls.simulationSteps = 0;
+                        controls.simulationLimited = false;
+                        if (actions.reset) particleLifeScene.reset();
+                        else {
+                            if (actions.step && particleLifeScene.singleStep()) ++controls.simulationSteps;
+                            if (!actions.skipElapsed) {
+                                const double budget = particleLifeSmokeTest ? (presentedFrames >= 40 ? 0.0 :
+                                    std::numeric_limits<double>::infinity()) : 0.008;
+                                controls.simulationSteps += particleLifeScene.advance(
+                                    particleLifeSmokeTest ? 1.0 / 60.0 : elapsed, budget);
+                                controls.simulationLimited = particleLifeScene.lastAdvanceLimited();
+                            }
+                        }
+                        controls.simulationMs = std::chrono::duration<float, std::milli>(
+                            std::chrono::steady_clock::now() - started).count();
+                        particle_life::makeParticleLifeParticles(particleLifeScene, renderParticles);
+                        if (particleLifeSmokeTest) {
+                            require(renderParticles.size() == particleLifeScene.count(),
+                                "Particle Life render count mismatch");
+                            for (std::size_t i = 0; i < renderParticles.size(); ++i) {
+                                require(renderParticles[i].color == particle_life::ParticleLifeScene::speciesColor(
+                                    particleLifeScene.species()[i]), "Particle Life species color mismatch");
+                            }
+                            if (particleLifeScene.paused() && !actions.step && !actions.reset)
+                                require(particleLifeScene.totalSteps() == stepsBefore, "Paused Particle Life advanced");
+                            if (actions.step) require(particleLifeScene.totalSteps() == stepsBefore + 1,
+                                "Particle Life single step failed");
+                            if (actions.reset) require(particleLifeScene.totalSteps() == 0, "Particle Life reset failed");
+                            if (presentedFrames >= 40) require(controls.simulationSteps == 1 && controls.simulationLimited,
+                                "Particle Life frame budget failed");
+                            if (!particleLifeScene.agents().empty() && !actions.reset &&
+                                particleLifeScene.totalSteps() > stepsBefore)
+                                observedParticleLifeMotion |= particleLifeScene.agents().front().position != firstPosition;
+                            require(scene.totalSteps() == 0 && antScene.totalSteps() == 0,
+                                "Particle Life advanced inactive scenes");
+                        }
+                        core::SceneView view;
+                        view.viewProjection = camera.viewProjection(aspect);
+                        view.right = glm::vec4(camera.right(), 0);
+                        view.up = glm::vec4(camera.up(), 0);
+                        view.options = {controls.particleLife.agentSize, 1.0F, 0, 0};
+                        ui.endFrame();
+                        if (particleLifeSmokeTest && !controls.panelVisible)
+                            require(ImGui::GetDrawData()->TotalVtxCount == 0, "Hidden Particle Life panel left UI commands");
+                        particleLifeLines.draw(commands, view, controls.grid, controls.bounds);
+                        particles.draw(commands, frame, renderParticles, view);
+                        ui.record(commands);
+                        return;
+                    }
                     if (controls.scenario == 1) {
                         repel.setEnabled(false);
                         attract.setEnabled(false);
@@ -876,6 +1004,13 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
             "Ant smoke test closed before all checks completed");
         std::cout << "Ant smoke test passed: " << presentedFrames << " frames, " << generations
             << " swapchain generations, food/hostiles/trails/terrain, 0/24/48 obstacles, 0/1/257/1500 ants, pause/step/reset/seed, "
+               "scene switches/budget/MSAA/fullscreen/F1 panel, 0 validation errors.\n";
+    }
+    if (particleLifeSmokeTest) {
+        require(presentedFrames >= 48 && generations >= 3 && observedParticleLifeMotion && observedSceneSwitch,
+            "Particle Life smoke test closed before all checks completed");
+        std::cout << "Particle Life smoke test passed: " << presentedFrames << " frames, " << generations
+            << " swapchain generations, 0/1/257/2000 particles, 6/8 species, matrix/seed/pause/step/reset, "
                "scene switches/budget/MSAA/fullscreen/F1 panel, 0 validation errors.\n";
     }
     return 0;

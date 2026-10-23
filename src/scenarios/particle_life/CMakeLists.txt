@@ -1,0 +1,18 @@
+add_library(emergences_particle_life STATIC ParticleLifeScene.cpp)
+add_library(emergences::particle_life ALIAS emergences_particle_life)
+target_link_libraries(emergences_particle_life PUBLIC emergences::sim)
+emergences_target_defaults(emergences_particle_life)
+
+if(BUILD_TESTING)
+    set(header_check "${CMAKE_CURRENT_BINARY_DIR}/header_checks/ParticleLifeScene.cpp")
+    file(GENERATE OUTPUT "${header_check}" CONTENT "#include \"scenarios/particle_life/ParticleLifeScene.h\"\n")
+    add_library(emergences_particle_life_header_check OBJECT "${header_check}")
+    target_link_libraries(emergences_particle_life_header_check PRIVATE emergences::particle_life)
+    emergences_target_defaults(emergences_particle_life_header_check)
+
+    add_executable(emergences_particle_life_scene_tests tests/ParticleLifeSceneTests.cpp)
+    target_link_libraries(emergences_particle_life_scene_tests PRIVATE emergences::particle_life)
+    emergences_target_defaults(emergences_particle_life_scene_tests)
+    add_test(NAME particle_life_scene COMMAND emergences_particle_life_scene_tests)
+    set_tests_properties(particle_life_scene PROPERTIES LABELS "cpu;sim;particle_life" TIMEOUT 60)
+endif()

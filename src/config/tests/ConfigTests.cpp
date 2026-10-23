@@ -74,6 +74,11 @@ void missingFileCreatesDefaults(const std::filesystem::path& directory) {
             "Existing users must retain Boids while new ant settings receive defaults");
     require(text.find("view.fullscreen = off\n") != std::string::npos,
             "Booleans must use on/off");
+    require(text.find("scenarios.particle_life.count = 2000\n") != std::string::npos &&
+                text.find("scenarios.particle_life.species_count = 6\n") != std::string::npos &&
+                text.find("scenarios.particle_life.custom_matrix = off\n") != std::string::npos &&
+                text.find("scenarios.particle_life.matrix.7.7 = 0\n") != std::string::npos,
+            "Particle Life defaults must preserve generated rules and all matrix entries");
     ConfigFile reloaded(path);
     require(reloaded.settings() == config.settings() && reloaded.warnings().empty(),
             "Saved defaults must round trip without warnings");
@@ -219,6 +224,97 @@ void completeRoundTripAndComments(const std::filesystem::path& directory) {
     require(!config.save() && read(path) == twice, "Invalid runtime enums must leave existing file intact");
 }
 
+void particleLifeRoundTripAndValidation(const std::filesystem::path& directory) {
+    const auto path = directory / "particle-life.cfg";
+    write(path, "# Particle Life rules\n"
+                "app.scenario = particle_life\n"
+                "scenarios.particle_life.matrix.1.0 = -0.75 # asymmetric rule\n");
+    ConfigFile config(path);
+    require(config.warnings().empty() && config.settings().scenario == 2,
+            "Particle Life must be selectable by its symbolic scenario name");
+    auto& life = config.settings().particleLife;
+    require(life.matrix[8] == -0.75F && life.matrix[1] == 0.0F && !life.customMatrix,
+            "Matrix rows must identify receiving species with a fixed stride of eight");
+    life.count = 10000;
+    life.seed = std::numeric_limits<int>::max();
+    life.speciesCount = 8;
+    life.paused = true;
+    life.interactionRadius = 29.25F;
+    life.force = 99.5F;
+    life.friction = 19.5F;
+    life.repulsion = 4.5F;
+    life.coreRatio = 0.75F;
+    life.maxSpeed = 98.5F;
+    life.agentSize = 1.25F;
+    life.customMatrix = true;
+    for (std::size_t index = 0; index < life.matrix.size(); ++index) {
+        life.matrix[index] = static_cast<float>(index) / 31.5F - 1.0F;
+    }
+    require(config.save(), "Particle Life settings must save");
+    const auto saved = read(path);
+    require(saved.find("app.scenario = particle_life\n") != std::string::npos &&
+                saved.find("scenarios.particle_life.custom_matrix = on\n") != std::string::npos &&
+                saved.find("# asymmetric rule\n") != std::string::npos,
+            "Saving Particle Life must retain selection, custom rules, and matrix comments");
+    ConfigFile reloaded(path);
+    require(reloaded.settings() == config.settings() && reloaded.warnings().empty(),
+            "Every Particle Life setting and directed matrix entry must round trip exactly");
+    life.matrix[63] = std::numeric_limits<float>::infinity();
+    require(!config.save() && read(path) == saved,
+            "Non-finite runtime matrix values must leave the saved configuration intact");
+    life.matrix[63] = 1.01F;
+    require(!config.save() && read(path) == saved,
+            "Out-of-range runtime matrix values must leave the saved configuration intact");
+
+    const std::string invalidEntries[] = {
+        "app.scenario = particle-life",
+        "scenarios.particle_life.count = -1",
+        "scenarios.particle_life.count = 10001",
+        "scenarios.particle_life.count = 5.5",
+        "scenarios.particle_life.seed = -1",
+        "scenarios.particle_life.seed = 2147483648",
+        "scenarios.particle_life.species_count = 0",
+        "scenarios.particle_life.species_count = 9",
+        "scenarios.particle_life.paused = yes",
+        "scenarios.particle_life.interaction_radius = 0.99",
+        "scenarios.particle_life.interaction_radius = 30.1",
+        "scenarios.particle_life.force = -0.01",
+        "scenarios.particle_life.force = 100.1",
+        "scenarios.particle_life.friction = -0.01",
+        "scenarios.particle_life.friction = 20.1",
+        "scenarios.particle_life.repulsion = -0.01",
+        "scenarios.particle_life.repulsion = 5.1",
+        "scenarios.particle_life.core_ratio = 0.049",
+        "scenarios.particle_life.core_ratio = 0.81",
+        "scenarios.particle_life.max_speed = 0.99",
+        "scenarios.particle_life.max_speed = 100.1",
+        "scenarios.particle_life.agent_size = 0.09",
+        "scenarios.particle_life.agent_size = 1.51",
+        "scenarios.particle_life.custom_matrix = maybe",
+        "scenarios.particle_life.matrix.0.1 = -1.01",
+        "scenarios.particle_life.matrix.0.1 = 1.01",
+        "scenarios.particle_life.matrix.0.1 = nan",
+        "scenarios.particle_life.matrix.0.1 = inf",
+        "scenarios.particle_life.matrix.0.1 = 0.5garbage",
+        "scenarios.particle_life.matrix.8.0 = 0.5",
+        "scenarios.particle_life.matrix.0.8 = 0.5",
+    };
+    std::string input = "app.scenario = particle_life\n"
+                        "scenarios.particle_life.matrix.0.1 = 0.375\n";
+    for (const auto& invalid : invalidEntries) {
+        input += invalid + '\n';
+    }
+    write(path, input);
+    ConfigFile invalid(path);
+    auto expected = Settings{};
+    expected.scenario = 2;
+    expected.particleLife.matrix[1] = 0.375F;
+    require(invalid.settings() == expected,
+            "Invalid Particle Life values must retain defaults or the previous valid rule");
+    require(invalid.warnings().size() == std::size(invalidEntries),
+            "Every invalid Particle Life value or matrix coordinate needs a diagnostic");
+}
+
 void antSettingsValidation(const std::filesystem::path& directory) {
     const auto path = directory / "ants.cfg";
     write(path, "app.scenario = ants\n"
@@ -274,7 +370,7 @@ void antSettingsValidation(const std::filesystem::path& directory) {
     settings.ants.seed = -1;
     require(!config.save() && read(path) == saved, "Invalid runtime ant seeds must not replace the file");
     settings.ants.seed = 0;
-    settings.scenario = 2;
+    settings.scenario = 3;
     require(!config.save() && read(path) == saved, "Unknown runtime scenes must not replace the file");
     settings.scenario = 1;
     for (const auto invalid : {-1, 49}) {
@@ -365,6 +461,7 @@ int main() {
         examplesAndOrder(scratch.path);
         invalidValuesKeepPrevious(scratch.path);
         completeRoundTripAndComments(scratch.path);
+        particleLifeRoundTripAndValidation(scratch.path);
         antSettingsValidation(scratch.path);
         ioFailures(scratch.path);
         std::cout << "Configuration settings tests passed\n";

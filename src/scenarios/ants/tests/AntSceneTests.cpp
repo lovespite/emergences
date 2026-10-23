@@ -719,6 +719,38 @@ void attractToThreat(AntScene& scene, const glm::vec3& center) {
     }
 }
 
+void staleTrailPeaksDoNotTrapAnts() {
+    for (const float wander : {0.0F, 0.1F}) {
+        AntScene scene{64, 12345};
+        prepareThreatFixture(scene);
+        auto parameters = scene.parameters();
+        parameters.wander = wander;
+        scene.setParameters(parameters);
+        // Keep predators far outside sensing range; the frozen peak has no food
+        // reward and cannot fade away to release ants by itself.
+        placeThreat(scene, {-70.0F, 0.0F, -70.0F});
+        const glm::vec3 center{30.0F, 0.0F, 30.0F};
+        attractToThreat(scene, center);
+        auto* ants = const_cast<sim::Agent*>(scene.agents().data());
+        for (std::size_t index = 0; index < scene.count(); ++index) {
+            const auto heading = glm::normalize(ants[index].velocity);
+            const glm::vec3 outward{heading.z, 0.0F, -heading.x};
+            // Seeded headings are tangent to the peak, exposing the orbit that
+            // results when steering considers only the three distant samples.
+            ants[index].position = center + outward * 8.0F;
+        }
+        std::vector<float> furthest(scene.count(), 0.0F);
+        for (int tick = 0; tick < 720; ++tick) {
+            ticks(scene, 1);
+            for (std::size_t index = 0; index < scene.count(); ++index) {
+                furthest[index] = std::max(furthest[index], glm::length(ants[index].position - center));
+            }
+        }
+        require(std::all_of(furthest.begin(), furthest.end(), [](float distance) { return distance > 20.0F; }),
+                "Every ant must leave a stale trail peak even with zero or very little wandering");
+    }
+}
+
 void strongTrailsDoNotTrapAntsAroundEnemies() {
     AntScene scene{64, 12345};
     prepareThreatFixture(scene);
@@ -834,6 +866,7 @@ int main() {
         pheromoneLifecycle();
         periodicFoodLifecycle();
         replenishmentReplayAndCapacity();
+        staleTrailPeaksDoNotTrapAnts();
         strongTrailsDoNotTrapAntsAroundEnemies();
         escapePersistsThenForagingResumes();
         resetsDiscardEscapeHistory();

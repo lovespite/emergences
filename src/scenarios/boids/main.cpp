@@ -106,6 +106,8 @@ int main(int argc, char** argv) {
     bool gpuSmokeTest = false;
     bool antsSmokeTest = false;
     bool startAnts = false;
+    bool startParticleLife = false;
+    bool particleLifeSmokeTest = false;
     bool renderPreview = false;
     bool noConfig = false;
     std::optional<std::filesystem::path> configPath;
@@ -119,6 +121,8 @@ int main(int argc, char** argv) {
                          "  --gpu-smoke-test  Verify GPU Boids rendering and CPU/GPU state transfers.\n"
                          "  --ants-smoke-test  Verify ants, environment, pheromone trails and scene switches.\n"
                          "  --ants        Start the Ant Colony scene (also available in the Scene menu).\n"
+                         "  --particle-life  Start Particle Life with an editable species interaction matrix.\n"
+                         "  --particle-life-smoke-test  Verify Particle Life controls, rendering and scene switches.\n"
                          "  --render-preview  Show the procedural renderer preview.\n"
                          "  --config PATH  Load and remember settings in this file.\n"
                          "  --no-config   Use defaults without reading or writing settings.\n"
@@ -146,6 +150,10 @@ int main(int argc, char** argv) {
             antsSmokeTest = true;
         } else if (argument == "--ants") {
             startAnts = true;
+        } else if (argument == "--particle-life") {
+            startParticleLife = true;
+        } else if (argument == "--particle-life-smoke-test") {
+            particleLifeSmokeTest = true;
         } else if (argument == "--render-preview") {
             renderPreview = true;
         } else if (argument == "--config") {
@@ -171,7 +179,8 @@ int main(int argc, char** argv) {
 
     if (static_cast<int>(smokeTest) + static_cast<int>(renderSmokeTest) +
         static_cast<int>(boidsSmokeTest) + static_cast<int>(gpuSmokeTest) + static_cast<int>(renderPreview) +
-        static_cast<int>(antsSmokeTest) + static_cast<int>(startAnts) > 1) {
+        static_cast<int>(antsSmokeTest) + static_cast<int>(startAnts) +
+        static_cast<int>(startParticleLife) + static_cast<int>(particleLifeSmokeTest) > 1) {
         std::cerr << "Choose only one application mode.\n";
         return 2;
     }
@@ -179,7 +188,8 @@ int main(int argc, char** argv) {
     try {
         const auto shaders = shaderDirectory();
         std::unique_ptr<emergences::config::ConfigFile> config;
-        if (!(smokeTest || renderSmokeTest || boidsSmokeTest || gpuSmokeTest || antsSmokeTest || noConfig)) {
+        if (!(smokeTest || renderSmokeTest || boidsSmokeTest || gpuSmokeTest || antsSmokeTest ||
+              particleLifeSmokeTest || noConfig)) {
             config = std::make_unique<emergences::config::ConfigFile>(
                 configPath ? std::filesystem::absolute(*configPath) : shaders.parent_path() / "emergences.conf");
             const auto settingsPath = config->path().u8string();
@@ -190,12 +200,14 @@ int main(int argc, char** argv) {
         emergences::scenarios::boids::BoidsApp app;
         if (smokeTest) return app.runTriangle(shaders, true);
         if (renderSmokeTest || renderPreview) return app.runPreview(shaders, renderSmokeTest, config.get());
-        return app.run(shaders, boidsSmokeTest, gpuSmokeTest, config.get(), startAnts, antsSmokeTest);
+        return app.run(shaders, boidsSmokeTest, gpuSmokeTest, config.get(), startAnts, antsSmokeTest,
+                       startParticleLife, particleLifeSmokeTest);
     } catch (const std::exception& error) {
         const std::string message = std::string{"Application failed: "} + error.what();
         std::cerr << message << '\n';
 #if defined(_WIN32)
-        if (!std::cerr && !(smokeTest || renderSmokeTest || boidsSmokeTest || gpuSmokeTest || antsSmokeTest)) {
+        if (!std::cerr && !(smokeTest || renderSmokeTest || boidsSmokeTest || gpuSmokeTest || antsSmokeTest ||
+                            particleLifeSmokeTest)) {
             MessageBoxA(nullptr, message.c_str(), "emergences", MB_OK | MB_ICONERROR);
         }
 #endif
