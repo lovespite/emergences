@@ -181,7 +181,7 @@ void smokeSettings(std::size_t frame, Preview& preview, core::Camera& camera) {
 int BoidsApp::runPreview(const std::filesystem::path& shaderDirectory, bool smokeTest,
                          config::ConfigFile* config) {
     if (smokeTest) config = nullptr;
-    core::Window window{1280, 720, "Emergences | Particle rendering preview"};
+    core::Window window{1280, 720, EMERGENCES_WINDOW_TITLE_PREFIX "Particle Rendering Preview"};
     if (config) window.setFullscreen(config->settings().view.fullscreen);
     core::Context context{window};
     std::cout << "Vulkan initialized on: " << context.deviceName() << '\n';

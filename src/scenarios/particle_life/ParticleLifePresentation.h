@@ -1,5 +1,6 @@
 #pragma once
 
+#include <string>
 #include <vector>
 
 #include "config/AppConfig.h"
@@ -25,7 +26,7 @@ void resetParticleLifeCamera(core::Camera&);
 // Draws inside the application's shared control window.
 ParticleLifePanelActions drawParticleLifeControls(ParticleLifeScene&,
     config::ParticleLifeSettings&, core::Camera&, const core::FrameRenderer&,
-    bool& antialiasing, bool& grid, bool& bounds);
+    bool& antialiasing, bool& grid, bool& bounds, std::string& backendError);
 void makeParticleLifeParticles(const ParticleLifeScene&, std::vector<core::Particle>&);
 
 } // namespace emergences::scenarios::particle_life

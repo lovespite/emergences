@@ -26,6 +26,7 @@ public:
     void pollEvents();
     void waitEvents();
     [[nodiscard]] std::pair<int, int> framebufferSize() const;
+    void setTitle(std::string_view title);
     void resize(int width, int height);
     void setFullscreen(bool fullscreen);
     void toggleFullscreen();

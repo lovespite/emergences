@@ -4,14 +4,20 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <span>
+#include <string>
 #include <vector>
 
 #include "sim/Agent.h"
+#include "sim/Backend.h"
+#include "sim/ComputeDevice.h"
 #include "sim/World.h"
 #include "sim/cpu/SpatialHash.h"
 
 namespace emergences::scenarios::particle_life {
+
+class ParticleLifeGpu;
 
 struct ParticleLifeParameters {
     float interactionRadius{12.0F};
@@ -22,7 +28,7 @@ struct ParticleLifeParameters {
     float maxSpeed{20.0F};
 };
 
-// Deterministic CPU particle life on a periodic XZ plane. Matrix rows describe
+// Particle life on a periodic XZ plane. Matrix rows describe
 // the receiving species, columns the source species; interactions may be
 // asymmetric. Borrowed views remain valid until their state is changed.
 class ParticleLifeScene {
@@ -34,6 +40,21 @@ public:
     static constexpr float WorldHalfExtent = 50.0F;
 
     explicit ParticleLifeScene(std::size_t count = 2000, std::uint32_t seed = 12345U);
+    ~ParticleLifeScene();
+
+    // Initialize only while CPU is active. The compute device must outlive the
+    // scene. A failed initialization preserves the existing backend and state.
+    void initializeGpu(sim::ComputeDevice& device, std::string shaderPath);
+    // Transfers state explicitly; retains parameters, matrix, seed, species,
+    // pause and completed steps. Discards only fractional accumulated time.
+    // Failure preserves the active state. GPU must have been initialized first.
+    void setBackend(sim::Backend backend);
+    [[nodiscard]] sim::Backend backend() const noexcept;
+    [[nodiscard]] bool gpuAvailable() const noexcept;
+    // GPU rendering consumes this buffer directly; CPU mode returns zero.
+    [[nodiscard]] sim::BufferHandle stateBuffer() const noexcept;
+    // Explicit diagnostic/transfer snapshot; never called by ordinary GPU steps.
+    [[nodiscard]] std::vector<sim::Agent> readback() const;
 
     [[nodiscard]] const ParticleLifeParameters& parameters() const noexcept;
     // Finite ranges: radius (0,50], force [0,200], friction [0,30], repulsion
@@ -61,7 +82,9 @@ public:
     [[nodiscard]] double elapsedSimulationSeconds() const noexcept;
     [[nodiscard]] bool lastAdvanceLimited() const noexcept;
 
+    // Empty while GPU is active: callers must not observe stale CPU positions.
     [[nodiscard]] std::span<const sim::Agent> agents() const noexcept;
+    // Species labels remain available on CPU for either backend.
     [[nodiscard]] std::span<const std::uint8_t> species() const noexcept;
     [[nodiscard]] const sim::World& world() const noexcept;
     [[nodiscard]] const std::array<float, MaxSpecies * MaxSpecies>& matrix() const noexcept;
@@ -89,6 +112,7 @@ public:
 private:
     void step();
     void resetClock() noexcept;
+    void resetPopulation(std::size_t count, std::size_t speciesCount, std::uint32_t seed);
 
     ParticleLifeParameters parameters_;
     std::uint32_t seed_;
@@ -101,6 +125,8 @@ private:
     std::vector<glm::vec3> nextVelocities_;
     sim::cpu::SpatialHash grid_;
     std::vector<sim::Neighbor> neighbors_;
+    std::unique_ptr<ParticleLifeGpu> gpu_;
+    sim::Backend backend_{sim::Backend::CPU};
     double accumulator_{0.0};
     std::uint64_t totalSteps_{0};
     bool paused_{false};

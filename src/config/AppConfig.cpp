@@ -81,6 +81,7 @@ std::vector<Field> fields(Settings& settings) {
         {"scenarios.ants.agent_size", &a.agentSize, 0.1F, 1.5F},
         {"scenarios.ants.food_spawn_interval", &a.foodSpawnInterval, 1.0F, 120.0F},
         {"scenarios.particle_life.count", &life.count, 0.0F, 10000.0F},
+        {"scenarios.particle_life.backend", &life.gpu, 0.0F, 0.0F, "cpu|gpu"},
         {"scenarios.particle_life.seed", &life.seed, 0.0F, static_cast<float>(std::numeric_limits<int>::max())},
         {"scenarios.particle_life.species_count", &life.speciesCount, 1.0F, 8.0F},
         {"scenarios.particle_life.paused", &life.paused},

@@ -36,6 +36,14 @@
 namespace emergences::scenarios::boids {
 namespace {
 
+const char* sceneWindowTitle(int scenario) {
+    switch (scenario) {
+    case 1: return EMERGENCES_WINDOW_TITLE_PREFIX "Ant Colony";
+    case 2: return EMERGENCES_WINDOW_TITLE_PREFIX "Particle Life";
+    default: return EMERGENCES_WINDOW_TITLE_PREFIX "Boids";
+    }
+}
+
 struct Controls {
     int scenario = 0;
     config::AntSettings ants;
@@ -58,6 +66,7 @@ struct Controls {
     bool simulationLimited = false;
     double simulationWarningUntil = 0.0;
     std::string backendError;
+    std::string particleLifeBackendError;
 };
 
 struct Actions {
@@ -112,7 +121,8 @@ Actions drawPanel(BoidsScene& scene, ants::AntScene& antScene,
             actions.skipElapsed |= panel.skipElapsed;
         } else {
             const auto panel = particle_life::drawParticleLifeControls(particleLifeScene,
-                controls.particleLife, camera, renderer, controls.antialiasing, controls.grid, controls.bounds);
+                controls.particleLife, camera, renderer, controls.antialiasing, controls.grid, controls.bounds,
+                controls.particleLifeBackendError);
             actions.reset = panel.reset;
             actions.step = panel.step;
             actions.skipElapsed |= panel.skipElapsed;
@@ -442,6 +452,23 @@ void gpuSmokeSettings(std::size_t frame, BoidsScene& scene, Controls& controls, 
     controls.shape = static_cast<int>((frame / 8) % 2);
 }
 
+void checkedParticleLifeSwitch(particle_life::ParticleLifeScene& scene, sim::Backend backend) {
+    const auto before = scene.readback();
+    const auto steps = scene.totalSteps();
+    const bool paused = scene.paused();
+    scene.setBackend(backend);
+    const auto after = scene.readback();
+    require(before.size() == after.size(), "Particle Life backend switch changed count");
+    require(scene.totalSteps() == steps && scene.paused() == paused,
+        "Particle Life backend switch changed clock or pause");
+    for (std::size_t i = 0; i < before.size(); ++i) {
+        require(before[i].position == after[i].position && before[i].velocity == after[i].velocity &&
+            before[i].id == after[i].id && before[i].color == after[i].color &&
+            before[i].size == after[i].size && before[i].reserved == after[i].reserved,
+            "Particle Life backend switch lost simulation state");
+    }
+}
+
 } // namespace
 
 int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, bool gpuSmokeTest,
@@ -449,7 +476,9 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
                   bool startParticleLife, bool particleLifeSmokeTest) {
     const bool anySmokeTest = smokeTest || gpuSmokeTest || antsSmokeTest || particleLifeSmokeTest;
     if (anySmokeTest) config = nullptr;
-    core::Window window{1280, 800, "Emergences | Boids, Ant Colony & Particle Life"};
+    int titledScenario = startParticleLife || particleLifeSmokeTest ? 2 :
+        startAnts || antsSmokeTest ? 1 : config ? config->settings().scenario : 0;
+    core::Window window{1280, 800, sceneWindowTitle(titledScenario)};
     if (config) window.setFullscreen(config->settings().view.fullscreen);
     core::Context context{window};
     std::cout << "Vulkan initialized on: " << context.deviceName() << '\n';
@@ -471,6 +500,7 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
     bool observedSceneSwitch = false;
     std::uint64_t inactiveAntSteps = 0;
     bool observedParticleLifeMotion = false;
+    bool observedParticleLifeGpuMotion = false;
     std::uint64_t inactiveParticleLifeSteps = 0;
     {
         core::VulkanComputeDevice compute{context};
@@ -531,6 +561,15 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
             controls.backendError = std::string{"GPU compute unavailable: "} + error.what();
         }
         if (gpuSmokeTest) require(scene.backend() == sim::Backend::GPU, "GPU must be the default backend");
+        try {
+            particleLifeScene.initializeGpu(compute, (shaderDirectory / "compute/particle_life.comp.spv").string());
+            if (controls.particleLife.gpu) particleLifeScene.setBackend(sim::Backend::GPU);
+        } catch (const std::exception& error) {
+            if (particleLifeSmokeTest) throw;
+            controls.particleLifeBackendError = std::string{"GPU compute unavailable: "} + error.what();
+        }
+        if (particleLifeSmokeTest) require(particleLifeScene.backend() == sim::Backend::GPU,
+            "Particle Life must prefer GPU when available");
         auto repelOwner = std::make_unique<CursorRepel>();
         auto attractOwner = std::make_unique<CursorAttract>();
         auto& repel = *repelOwner;
@@ -622,7 +661,11 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
                         if (presentedFrames == 2) particleLifeScene.setCount(1);
                         if (presentedFrames == 3) particleLifeScene.setCount(257);
                         if (presentedFrames == 4) particleLifeScene.setCount(2000);
-                        if (presentedFrames == 6) particleLifeScene.setSpeciesCount(8);
+                        if (presentedFrames == 6) {
+                            particleLifeScene.setSpeciesCount(8);
+                            checkedParticleLifeSwitch(particleLifeScene, sim::Backend::CPU);
+                        }
+                        if (presentedFrames == 7) checkedParticleLifeSwitch(particleLifeScene, sim::Backend::GPU);
                         if (presentedFrames == 8) particleLifeScene.setPaused(true);
                         if (presentedFrames == 9) actions.step = true;
                         if (presentedFrames == 10) particleLifeScene.setPaused(false);
@@ -640,6 +683,7 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
                         }
                         if (presentedFrames == 24) actions.reset = true;
                         if (presentedFrames == 28) particleLifeScene.setSpeciesCount(6);
+                        if (presentedFrames == 31) checkedParticleLifeSwitch(particleLifeScene, sim::Backend::CPU);
                         if (presentedFrames == 32) {
                             inactiveParticleLifeSteps = particleLifeScene.totalSteps();
                             controls.scenario = 0;
@@ -657,6 +701,7 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
                             controls.scenario = 2;
                             observedSceneSwitch = true;
                         }
+                        if (presentedFrames == 37) checkedParticleLifeSwitch(particleLifeScene, sim::Backend::GPU);
                     }
                     if (antsSmokeTest) {
                         if (presentedFrames == 1) antScene.setCount(0);
@@ -699,6 +744,10 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
                         actions.step |= panelActions.step;
                         actions.skipElapsed |= panelActions.skipElapsed;
                     }
+                    if (controls.scenario != titledScenario) {
+                        window.setTitle(sceneWindowTitle(controls.scenario));
+                        titledScenario = controls.scenario;
+                    }
                     // Exercise the same deferred fullscreen request as the checkbox.
                     if (anySmokeTest && presentedFrames == 16) fullscreen = true;
                     if (anySmokeTest && presentedFrames == 20) fullscreen = false;
@@ -717,7 +766,7 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
                         repel.setEnabled(false);
                         attract.setEnabled(false);
                         const auto stepsBefore = particleLifeScene.totalSteps();
-                        const auto oldAgents = particleLifeScene.agents();
+                        const auto oldAgents = particleLifeSmokeTest ? particleLifeScene.readback() : std::vector<sim::Agent>{};
                         const auto firstPosition = oldAgents.empty() ? glm::vec3{0} : oldAgents.front().position;
                         const auto started = std::chrono::steady_clock::now();
                         controls.simulationSteps = 0;
@@ -737,10 +786,14 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
                             std::chrono::steady_clock::now() - started).count();
                         particle_life::makeParticleLifeParticles(particleLifeScene, renderParticles);
                         if (particleLifeSmokeTest) {
-                            require(renderParticles.size() == particleLifeScene.count(),
-                                "Particle Life render count mismatch");
-                            for (std::size_t i = 0; i < renderParticles.size(); ++i) {
-                                require(renderParticles[i].color == particle_life::ParticleLifeScene::speciesColor(
+                            const bool gpu = particleLifeScene.backend() == sim::Backend::GPU;
+                            require(gpu ? (particleLifeScene.agents().empty() && renderParticles.empty()) :
+                                renderParticles.size() == particleLifeScene.count(),
+                                "Particle Life must render GPU state without a CPU copy");
+                            const auto state = particleLifeScene.readback();
+                            require(state.size() == particleLifeScene.count(), "Particle Life state count mismatch");
+                            for (std::size_t i = 0; i < state.size(); ++i) {
+                                require(state[i].color == particle_life::ParticleLifeScene::speciesColor(
                                     particleLifeScene.species()[i]), "Particle Life species color mismatch");
                             }
                             if (particleLifeScene.paused() && !actions.step && !actions.reset)
@@ -750,9 +803,11 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
                             if (actions.reset) require(particleLifeScene.totalSteps() == 0, "Particle Life reset failed");
                             if (presentedFrames >= 40) require(controls.simulationSteps == 1 && controls.simulationLimited,
                                 "Particle Life frame budget failed");
-                            if (!particleLifeScene.agents().empty() && !actions.reset &&
-                                particleLifeScene.totalSteps() > stepsBefore)
-                                observedParticleLifeMotion |= particleLifeScene.agents().front().position != firstPosition;
+                            if (!state.empty() && !actions.reset && particleLifeScene.totalSteps() > stepsBefore) {
+                                const bool moved = state.front().position != firstPosition;
+                                observedParticleLifeMotion |= moved;
+                                observedParticleLifeGpuMotion |= gpu && moved;
+                            }
                             require(scene.totalSteps() == 0 && antScene.totalSteps() == 0,
                                 "Particle Life advanced inactive scenes");
                         }
@@ -765,7 +820,13 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
                         if (particleLifeSmokeTest && !controls.panelVisible)
                             require(ImGui::GetDrawData()->TotalVtxCount == 0, "Hidden Particle Life panel left UI commands");
                         particleLifeLines.draw(commands, view, controls.grid, controls.bounds);
-                        particles.draw(commands, frame, renderParticles, view);
+                        if (particleLifeScene.backend() == sim::Backend::GPU) {
+                            const auto buffer = particleLifeScene.stateBuffer();
+                            particles.drawBuffer(commands, frame, compute.buffer(buffer), compute.bufferSize(buffer),
+                                static_cast<std::uint32_t>(particleLifeScene.count()), view);
+                        } else {
+                            particles.draw(commands, frame, renderParticles, view);
+                        }
                         ui.record(commands);
                         return;
                     }
@@ -1007,11 +1068,12 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
                "scene switches/budget/MSAA/fullscreen/F1 panel, 0 validation errors.\n";
     }
     if (particleLifeSmokeTest) {
-        require(presentedFrames >= 48 && generations >= 3 && observedParticleLifeMotion && observedSceneSwitch,
+        require(presentedFrames >= 48 && generations >= 3 && observedParticleLifeMotion &&
+            observedParticleLifeGpuMotion && observedSceneSwitch,
             "Particle Life smoke test closed before all checks completed");
         std::cout << "Particle Life smoke test passed: " << presentedFrames << " frames, " << generations
             << " swapchain generations, 0/1/257/2000 particles, 6/8 species, matrix/seed/pause/step/reset, "
-               "scene switches/budget/MSAA/fullscreen/F1 panel, 0 validation errors.\n";
+               "CPU/GPU transfers/direct GPU rendering/scene switches/budget/MSAA/fullscreen/F1 panel, 0 validation errors.\n";
     }
     return 0;
 }

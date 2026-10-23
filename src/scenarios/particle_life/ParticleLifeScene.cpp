@@ -6,8 +6,11 @@
 #include <random>
 #include <stdexcept>
 #include <unordered_set>
+#include <utility>
 
 #include <glm/geometric.hpp>
+
+#include "scenarios/particle_life/ParticleLifeGpu.h"
 
 namespace emergences::scenarios::particle_life {
 namespace {
@@ -74,7 +77,6 @@ glm::vec3 overlapDirection(std::uint32_t receiver, std::uint32_t source) {
 
 ParticleLifeScene::ParticleLifeScene(std::size_t count, std::uint32_t seed) : seed_{seed} {
     validateCount(count);
-    agents_.resize(count);
     randomizeMatrix(314159U);
     // Positive self-attraction gives the initial world visible groups while
     // cross-species forces remain independently sampled and asymmetric.
@@ -82,7 +84,48 @@ ParticleLifeScene::ParticleLifeScene(std::size_t count, std::uint32_t seed) : se
         auto& value = matrix_[index * MaxSpecies + index];
         value = 0.4F + 0.5F * std::abs(value);
     }
-    reset();
+    resetPopulation(count, speciesCount_, seed_);
+}
+
+ParticleLifeScene::~ParticleLifeScene() = default;
+
+void ParticleLifeScene::initializeGpu(sim::ComputeDevice& device, std::string shaderPath) {
+    if (backend_ != sim::Backend::CPU) {
+        throw std::logic_error("Particle life GPU initialization requires the CPU backend");
+    }
+    auto next = std::make_unique<ParticleLifeGpu>(device, std::move(shaderPath));
+    gpu_.swap(next);
+}
+
+void ParticleLifeScene::setBackend(sim::Backend backend) {
+    if (backend != sim::Backend::CPU && backend != sim::Backend::GPU) {
+        throw std::invalid_argument("Unknown particle life backend");
+    }
+    if (backend == backend_) return;
+    if (backend == sim::Backend::GPU) {
+        if (!gpu_) throw std::logic_error("Particle life GPU backend has not been initialized");
+        gpu_->setState(agents_, species_);
+    } else {
+        auto nextAgents = gpu_->readback();
+        if (nextAgents.size() != species_.size()) {
+            throw std::runtime_error("Particle life GPU readback returned the wrong population size");
+        }
+        std::vector<glm::vec3> nextVelocities(nextAgents.size());
+        agents_.swap(nextAgents);
+        nextVelocities_.swap(nextVelocities);
+    }
+    backend_ = backend;
+    accumulator_ = 0.0;
+    lastAdvanceLimited_ = false;
+}
+
+sim::Backend ParticleLifeScene::backend() const noexcept { return backend_; }
+bool ParticleLifeScene::gpuAvailable() const noexcept { return gpu_ != nullptr; }
+sim::BufferHandle ParticleLifeScene::stateBuffer() const noexcept {
+    return backend_ == sim::Backend::GPU ? gpu_->stateBuffer() : sim::BufferHandle{};
+}
+std::vector<sim::Agent> ParticleLifeScene::readback() const {
+    return backend_ == sim::Backend::GPU ? gpu_->readback() : agents_;
 }
 
 const ParticleLifeParameters& ParticleLifeScene::parameters() const noexcept { return parameters_; }
@@ -97,16 +140,19 @@ void ParticleLifeScene::setParameters(const ParticleLifeParameters& parameters) 
     validateRange(parameters.repulsion, 0.0F, 10.0F);
     validateRange(parameters.coreRatio, 0.01F, 0.95F);
     validateRange(parameters.maxSpeed, 0.0F, 100.0F);
+    if (backend_ == sim::Backend::GPU) {
+        if (parameters.maxSpeed < parameters_.maxSpeed) gpu_->clampSpeed(parameters.maxSpeed);
+    } else {
+        for (auto& agent : agents_) agent.velocity = limitSpeed(agent.velocity, parameters.maxSpeed);
+    }
     parameters_ = parameters;
-    for (auto& agent : agents_) agent.velocity = limitSpeed(agent.velocity, parameters_.maxSpeed);
 }
 
 std::size_t ParticleLifeScene::count() const noexcept { return agents_.size(); }
 void ParticleLifeScene::setCount(std::size_t count) {
     validateCount(count);
     if (count != agents_.size()) {
-        agents_.resize(count);
-        reset();
+        resetPopulation(count, speciesCount_, seed_);
     }
 }
 
@@ -116,15 +162,13 @@ void ParticleLifeScene::setSpeciesCount(std::size_t count) {
         throw std::invalid_argument("Particle life species count must be between one and eight");
     }
     if (count != speciesCount_) {
-        speciesCount_ = count;
-        reset();
+        resetPopulation(agents_.size(), count, seed_);
     }
 }
 
 std::uint32_t ParticleLifeScene::seed() const noexcept { return seed_; }
 void ParticleLifeScene::setSeed(std::uint32_t seed) {
-    seed_ = seed;
-    reset();
+    resetPopulation(agents_.size(), speciesCount_, seed);
 }
 
 void ParticleLifeScene::resetClock() noexcept {
@@ -134,20 +178,31 @@ void ParticleLifeScene::resetClock() noexcept {
 }
 
 void ParticleLifeScene::reset() {
-    std::mt19937 generator{seed_};
-    species_.resize(agents_.size());
-    nextVelocities_.resize(agents_.size());
-    for (std::size_t index = 0; index < agents_.size(); ++index) {
-        const auto type = static_cast<std::uint8_t>(index % speciesCount_);
-        species_[index] = type;
-        auto& agent = agents_[index];
-        agent = {};
+    resetPopulation(agents_.size(), speciesCount_, seed_);
+}
+
+void ParticleLifeScene::resetPopulation(std::size_t count, std::size_t speciesCount,
+                                       std::uint32_t seed) {
+    std::mt19937 generator{seed};
+    std::vector<sim::Agent> nextAgents(count);
+    std::vector<std::uint8_t> nextSpecies(count);
+    std::vector<glm::vec3> nextVelocities(count);
+    for (std::size_t index = 0; index < count; ++index) {
+        const auto type = static_cast<std::uint8_t>(index % speciesCount);
+        nextSpecies[index] = type;
+        auto& agent = nextAgents[index];
         agent.id = static_cast<std::uint32_t>(index);
         agent.position = {(unitRandom(generator) * 2.0F - 1.0F) * WorldHalfExtent,
                           0.0F, (unitRandom(generator) * 2.0F - 1.0F) * WorldHalfExtent};
         agent.color = speciesColor(type);
         agent.size = 0.7F;
     }
+    if (backend_ == sim::Backend::GPU) gpu_->setState(nextAgents, nextSpecies);
+    agents_.swap(nextAgents);
+    species_.swap(nextSpecies);
+    nextVelocities_.swap(nextVelocities);
+    speciesCount_ = speciesCount;
+    seed_ = seed;
     resetClock();
 }
 
@@ -208,7 +263,9 @@ double ParticleLifeScene::elapsedSimulationSeconds() const noexcept {
 }
 bool ParticleLifeScene::lastAdvanceLimited() const noexcept { return lastAdvanceLimited_; }
 
-std::span<const sim::Agent> ParticleLifeScene::agents() const noexcept { return agents_; }
+std::span<const sim::Agent> ParticleLifeScene::agents() const noexcept {
+    return backend_ == sim::Backend::GPU ? std::span<const sim::Agent>{} : agents_;
+}
 std::span<const std::uint8_t> ParticleLifeScene::species() const noexcept { return species_; }
 const sim::World& ParticleLifeScene::world() const noexcept { return world_; }
 const std::array<float, ParticleLifeScene::MaxSpecies * ParticleLifeScene::MaxSpecies>&
@@ -271,6 +328,7 @@ void ParticleLifeScene::setAgents(std::span<const sim::Agent> agents,
     for (std::size_t index = 0; index < nextAgents.size(); ++index) {
         nextAgents[index].color = speciesColor(nextSpecies[index]);
     }
+    if (backend_ == sim::Backend::GPU) gpu_->setState(nextAgents, nextSpecies);
     agents_.swap(nextAgents);
     species_.swap(nextSpecies);
     nextVelocities_.swap(nextVelocities);
@@ -289,6 +347,10 @@ float ParticleLifeScene::interactionForce(float normalizedDistance, float attrac
 }
 
 void ParticleLifeScene::step() {
+    if (backend_ == sim::Backend::GPU) {
+        gpu_->step(StepSeconds, parameters_, matrix_);
+        return;
+    }
     grid_.rebuild(agents_, world_, parameters_.interactionRadius);
     const float damping = std::exp(-parameters_.friction * StepSeconds);
     for (std::size_t index = 0; index < agents_.size(); ++index) {

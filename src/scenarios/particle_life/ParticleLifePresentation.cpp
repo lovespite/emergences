@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <exception>
 #include <limits>
 
 #include <imgui.h>
@@ -10,6 +11,7 @@
 #include "core/Camera.h"
 #include "core/FrameRenderer.h"
 #include "scenarios/particle_life/ParticleLifeScene.h"
+#include "sim/Backend.h"
 
 namespace emergences::scenarios::particle_life {
 namespace {
@@ -103,6 +105,8 @@ void applyParticleLifeSettings(ParticleLifeScene& scene, const config::ParticleL
 }
 
 void captureParticleLifeSettings(const ParticleLifeScene& scene, config::ParticleLifeSettings& settings) {
+    // The stored preference survives a temporary GPU initialization failure.
+    // Only a successful user-requested backend switch updates settings.gpu.
     const auto& parameters = scene.parameters();
     settings.count = static_cast<int>(scene.count());
     settings.speciesCount = static_cast<int>(scene.speciesCount());
@@ -125,9 +129,30 @@ void resetParticleLifeCamera(core::Camera& camera) {
 
 ParticleLifePanelActions drawParticleLifeControls(ParticleLifeScene& scene,
     config::ParticleLifeSettings& settings, core::Camera& camera,
-    const core::FrameRenderer& renderer, bool& antialiasing, bool& grid, bool& bounds) {
+    const core::FrameRenderer& renderer, bool& antialiasing, bool& grid, bool& bounds,
+    std::string& backendError) {
     ParticleLifePanelActions actions;
-    ImGui::TextDisabled("CPU | %.0f x %.0f wrapped world",
+    if (ImGui::BeginCombo("Backend", scene.backend() == sim::Backend::CPU ? "CPU" : "GPU compute")) {
+        for (const auto backend : {sim::Backend::CPU, sim::Backend::GPU}) {
+            ImGui::BeginDisabled(backend == sim::Backend::GPU && !scene.gpuAvailable());
+            if (ImGui::Selectable(backend == sim::Backend::CPU ? "CPU" : "GPU compute",
+                    scene.backend() == backend)) {
+                try {
+                    scene.setBackend(backend);
+                    settings.gpu = backend == sim::Backend::GPU;
+                    backendError.clear();
+                    actions.skipElapsed = true;
+                } catch (const std::exception& error) {
+                    backendError = error.what();
+                }
+            }
+            ImGui::EndDisabled();
+        }
+        ImGui::EndCombo();
+    }
+    if (!backendError.empty()) ImGui::TextWrapped("%s", backendError.c_str());
+    ImGui::TextDisabled("%s | %.0f x %.0f wrapped world",
+        scene.backend() == sim::Backend::CPU ? "CPU" : "GPU compute",
         static_cast<double>(2.0F * ParticleLifeScene::WorldHalfExtent),
         static_cast<double>(2.0F * ParticleLifeScene::WorldHalfExtent));
     int count = static_cast<int>(scene.count());

@@ -149,6 +149,11 @@ std::pair<int, int> Window::framebufferSize() const {
     return {width, height};
 }
 
+void Window::setTitle(std::string_view title) {
+    const std::string ownedTitle(title);
+    glfwSetWindowTitle(window_, ownedTitle.c_str());
+}
+
 void Window::resize(int width, int height) {
     if (width <= 0 || height <= 0) {
         throw std::invalid_argument("Window dimensions must be positive");

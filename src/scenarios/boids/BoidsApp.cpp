@@ -12,7 +12,7 @@ namespace emergences::scenarios::boids {
 
 int BoidsApp::runTriangle(const std::filesystem::path& shaderDirectory, bool smokeTest) {
     // Destruction order: renderer, device/surface, then native window.
-    core::Window window{1280, 720, "Emergences | Vulkan triangle"};
+    core::Window window{1280, 720, EMERGENCES_WINDOW_TITLE_PREFIX "Vulkan Triangle"};
     core::Context context{window};
     std::cout << "Vulkan initialized on: " << context.deviceName() << '\n';
     std::cout << "Validation layer: " << (context.validationEnabled() ? "enabled" : "disabled") << '\n';

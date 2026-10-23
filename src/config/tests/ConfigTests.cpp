@@ -75,6 +75,7 @@ void missingFileCreatesDefaults(const std::filesystem::path& directory) {
     require(text.find("view.fullscreen = off\n") != std::string::npos,
             "Booleans must use on/off");
     require(text.find("scenarios.particle_life.count = 2000\n") != std::string::npos &&
+                text.find("scenarios.particle_life.backend = gpu\n") != std::string::npos &&
                 text.find("scenarios.particle_life.species_count = 6\n") != std::string::npos &&
                 text.find("scenarios.particle_life.custom_matrix = off\n") != std::string::npos &&
                 text.find("scenarios.particle_life.matrix.7.7 = 0\n") != std::string::npos,
@@ -233,9 +234,11 @@ void particleLifeRoundTripAndValidation(const std::filesystem::path& directory) 
     require(config.warnings().empty() && config.settings().scenario == 2,
             "Particle Life must be selectable by its symbolic scenario name");
     auto& life = config.settings().particleLife;
+    require(life.gpu, "Particle Life must default to preferring the GPU backend");
     require(life.matrix[8] == -0.75F && life.matrix[1] == 0.0F && !life.customMatrix,
             "Matrix rows must identify receiving species with a fixed stride of eight");
     life.count = 10000;
+    life.gpu = false;
     life.seed = std::numeric_limits<int>::max();
     life.speciesCount = 8;
     life.paused = true;
@@ -253,6 +256,7 @@ void particleLifeRoundTripAndValidation(const std::filesystem::path& directory) 
     require(config.save(), "Particle Life settings must save");
     const auto saved = read(path);
     require(saved.find("app.scenario = particle_life\n") != std::string::npos &&
+                saved.find("scenarios.particle_life.backend = cpu\n") != std::string::npos &&
                 saved.find("scenarios.particle_life.custom_matrix = on\n") != std::string::npos &&
                 saved.find("# asymmetric rule\n") != std::string::npos,
             "Saving Particle Life must retain selection, custom rules, and matrix comments");
@@ -271,6 +275,9 @@ void particleLifeRoundTripAndValidation(const std::filesystem::path& directory) 
         "scenarios.particle_life.count = -1",
         "scenarios.particle_life.count = 10001",
         "scenarios.particle_life.count = 5.5",
+        "scenarios.particle_life.backend = GPU",
+        "scenarios.particle_life.backend = vulkan",
+        "scenarios.particle_life.backend = true",
         "scenarios.particle_life.seed = -1",
         "scenarios.particle_life.seed = 2147483648",
         "scenarios.particle_life.species_count = 0",
@@ -313,6 +320,11 @@ void particleLifeRoundTripAndValidation(const std::filesystem::path& directory) 
             "Invalid Particle Life values must retain defaults or the previous valid rule");
     require(invalid.warnings().size() == std::size(invalidEntries),
             "Every invalid Particle Life value or matrix coordinate needs a diagnostic");
+    write(path, "scenarios.particle_life.backend = cpu\n"
+                "scenarios.particle_life.backend = invalid\n");
+    ConfigFile invalidBackend(path);
+    require(!invalidBackend.settings().particleLife.gpu && invalidBackend.warnings().size() == 1,
+            "Invalid backend names must retain the last valid CPU preference");
 }
 
 void antSettingsValidation(const std::filesystem::path& directory) {

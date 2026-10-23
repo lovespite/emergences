@@ -51,6 +51,7 @@ struct AntSettings {
 
 struct ParticleLifeSettings {
     int count = 2000;
+    bool gpu = true;
     int seed = 12345;
     int speciesCount = 6;
     bool paused = false;

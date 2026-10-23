@@ -64,13 +64,14 @@ if(EMERGENCES_BUILD_APP)
         emergences::particle_life emergences::imgui)
     target_compile_definitions(emergences PRIVATE
         EMERGENCES_VERSION="${PROJECT_VERSION}"
+        EMERGENCES_WINDOW_TITLE_PREFIX="Emergences v${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR} - "
         EMERGENCES_SHADER_DIRECTORY="$<TARGET_FILE_DIR:emergences>/shaders")
     set_target_properties(emergences PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/$<CONFIG>"
         VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:emergences>")
     emergences_target_defaults(emergences)
     emergences_add_shaders(emergences smoke/triangle.vert smoke/triangle.frag
-        particle.vert particle.frag grid.vert grid.frag compute/boids.comp)
+        particle.vert particle.frag grid.vert grid.frag compute/boids.comp compute/particle_life.comp)
 
     # Run even when no C++ source changed, so the distributed reference stays
     # current after documentation edits. Never overwrite the user's .conf file.
@@ -104,6 +105,16 @@ if(EMERGENCES_BUILD_APP)
         add_dependencies(emergences_gpu_tests emergences_shaders)
         add_test(NAME boids_gpu_compute COMMAND emergences_gpu_tests)
         set_tests_properties(boids_gpu_compute PROPERTIES TIMEOUT 120 LABELS "gpu;sim;boids"
+            RUN_SERIAL TRUE FAIL_REGULAR_EXPRESSION "\\[Vulkan validation\\];Validation Error")
+
+        add_executable(emergences_particle_life_gpu_tests ../particle_life/tests/ParticleLifeGpuTests.cpp)
+        target_link_libraries(emergences_particle_life_gpu_tests PRIVATE emergences::core emergences::particle_life)
+        emergences_target_defaults(emergences_particle_life_gpu_tests)
+        target_compile_definitions(emergences_particle_life_gpu_tests PRIVATE
+            EMERGENCES_SHADER_DIRECTORY="${PROJECT_BINARY_DIR}/$<CONFIG>/shaders")
+        add_dependencies(emergences_particle_life_gpu_tests emergences_shaders)
+        add_test(NAME particle_life_gpu_compute COMMAND emergences_particle_life_gpu_tests)
+        set_tests_properties(particle_life_gpu_compute PROPERTIES TIMEOUT 120 LABELS "gpu;sim;particle_life"
             RUN_SERIAL TRUE FAIL_REGULAR_EXPRESSION "\\[Vulkan validation\\];Validation Error")
     endif()
 endif()
