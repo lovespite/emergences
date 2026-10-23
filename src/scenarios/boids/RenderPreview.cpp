@@ -1,4 +1,5 @@
 #include "scenarios/boids/BoidsApp.h"
+#include "config/AppConfig.h"
 #include "core/Camera.h"
 #include "core/Context.h"
 #include "core/FrameRenderer.h"
@@ -12,6 +13,7 @@
 #include <cmath>
 #include <iostream>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace emergences::scenarios::boids {
@@ -56,8 +58,51 @@ struct Preview {
     }
 };
 
+void restoreSettings(const config::Settings& settings, Preview& preview, core::Camera& camera) {
+    preview.panelVisible = settings.view.panelVisible;
+    preview.mode = settings.view.agentShape;
+    preview.grid = settings.view.grid;
+    preview.bounds = settings.view.bounds;
+    preview.antialiasing = settings.view.antialiasing;
+    preview.count = settings.preview.count;
+    preview.animate = settings.preview.animate;
+    preview.colorMode = settings.preview.colorMode;
+    preview.scale = settings.preview.agentSize;
+    const auto& savedCamera = settings.camera;
+    camera.setState({{savedCamera.targetX, savedCamera.targetY, savedCamera.targetZ},
+                     savedCamera.yaw, savedCamera.pitch, savedCamera.distance});
+}
+
+void saveSettings(config::ConfigFile* config, const Preview& preview, const core::Camera& camera,
+                  const core::Window& window, std::string& reportedError) {
+    if (!config) return;
+    auto& settings = config->settings();
+    settings.view.fullscreen = window.isFullscreen();
+    settings.view.panelVisible = preview.panelVisible;
+    settings.view.agentShape = preview.mode;
+    settings.view.grid = preview.grid;
+    settings.view.bounds = preview.bounds;
+    settings.view.antialiasing = preview.antialiasing;
+    settings.preview.count = preview.count;
+    settings.preview.animate = preview.animate;
+    settings.preview.colorMode = preview.colorMode;
+    settings.preview.agentSize = preview.scale;
+    const auto state = camera.state();
+    settings.camera = {state.target.x, state.target.y, state.target.z,
+                       state.yaw, state.pitch, state.distance};
+    if (!config->save()) {
+        if (config->lastError() != reportedError) {
+            std::cerr << "Configuration: " << config->lastError() << '\n';
+        }
+        reportedError = config->lastError();
+    } else {
+        reportedError.clear();
+    }
+}
+
 void drawPanel(Preview& preview, core::Camera& camera, const core::Context& context,
-               const core::FrameRenderer& renderer, bool& fullscreen) {
+               const core::FrameRenderer& renderer, bool& fullscreen,
+               const config::ConfigFile* config) {
     ImGui::SetNextWindowPos(ImVec2(18, 18), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(310, 0), ImGuiCond_Always);
     ImGui::Begin("Emergences", nullptr, ImGuiWindowFlags_NoResize);
@@ -93,6 +138,22 @@ void drawPanel(Preview& preview, core::Camera& camera, const core::Context& cont
     ImGui::Text("%.1f FPS", static_cast<double>(ImGui::GetIO().Framerate));
     ImGui::TextWrapped("%s", context.deviceName().c_str());
     ImGui::TextDisabled("Validation: %s", context.validationEnabled() ? "on" : "off");
+    if (config) {
+        if (!config->lastError().empty()) {
+            ImGui::TextWrapped("Settings not saved: %s", config->lastError().c_str());
+        }
+        if (!config->warnings().empty()) {
+            ImGui::TextDisabled("Configuration: %zu warning(s)", config->warnings().size());
+        }
+        if (ImGui::CollapsingHeader("Configuration")) {
+            const auto path = config->path().u8string();
+            ImGui::TextWrapped("%s", reinterpret_cast<const char*>(path.c_str()));
+            ImGui::TextDisabled("Changes are saved automatically.");
+            for (const auto& warning : config->warnings()) {
+                ImGui::TextWrapped("%s", warning.c_str());
+            }
+        }
+    }
     ImGui::End();
 }
 
@@ -117,8 +178,11 @@ void smokeSettings(std::size_t frame, Preview& preview, core::Camera& camera) {
 }
 } // namespace
 
-int BoidsApp::runPreview(const std::filesystem::path& shaderDirectory, bool smokeTest) {
+int BoidsApp::runPreview(const std::filesystem::path& shaderDirectory, bool smokeTest,
+                         config::ConfigFile* config) {
+    if (smokeTest) config = nullptr;
     core::Window window{1280, 720, "Emergences | Particle rendering preview"};
+    if (config) window.setFullscreen(config->settings().view.fullscreen);
     core::Context context{window};
     std::cout << "Vulkan initialized on: " << context.deviceName() << '\n';
     std::cout << "Validation layer: " << (context.validationEnabled() ? "enabled" : "disabled") << '\n';
@@ -138,7 +202,11 @@ int BoidsApp::runPreview(const std::filesystem::path& shaderDirectory, bool smok
         core::FrameRenderer renderer{context, window};
         core::Camera camera;
         Preview preview;
+        if (config) restoreSettings(config->settings(), preview, camera);
+        std::string reportedConfigError;
+        saveSettings(config, preview, camera, window, reportedConfigError);
         auto previous = std::chrono::steady_clock::now();
+        auto lastSave = previous;
         const auto deadline = previous + std::chrono::seconds{25};
         while (!window.shouldClose()) {
             window.pollEvents();
@@ -177,7 +245,7 @@ int BoidsApp::runPreview(const std::filesystem::path& shaderDirectory, bool smok
                         throw std::runtime_error("Particle MSAA toggle did not select the expected sample count");
                     }
                     if (smokeTest) smokeSettings(presentedFrames, preview, camera);
-                    if (preview.panelVisible) drawPanel(preview, camera, context, renderer, fullscreen);
+                    if (preview.panelVisible) drawPanel(preview, camera, context, renderer, fullscreen, config);
                     if (smokeTest && presentedFrames == 16) fullscreen = true;
                     if (smokeTest && presentedFrames == 20) fullscreen = false;
                     if (!panelJustShown && (!preview.panelVisible || !ui.wantsMouse())) {
@@ -211,6 +279,10 @@ int BoidsApp::runPreview(const std::filesystem::path& shaderDirectory, bool smok
                 });
             // Finish submitting the current frame before changing the native surface.
             if (fullscreen != window.isFullscreen()) window.setFullscreen(fullscreen);
+            if (now - lastSave >= std::chrono::seconds{1}) {
+                saveSettings(config, preview, camera, window, reportedConfigError);
+                lastSave = now;
+            }
             if (smokeTest && presented && window.isFullscreen() != (presentedFrames >= 16 && presentedFrames < 20)) {
                 throw std::runtime_error("Fullscreen request did not change the window mode");
             }
@@ -222,6 +294,7 @@ int BoidsApp::runPreview(const std::filesystem::path& shaderDirectory, bool smok
                 else if (presentedFrames >= 24 && renderer.swapchainGeneration() >= 3) break;
             }
         }
+        saveSettings(config, preview, camera, window, reportedConfigError);
         context.waitIdle();
         generations = renderer.swapchainGeneration();
     }

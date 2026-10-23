@@ -28,6 +28,7 @@ public:
     [[nodiscard]] Backend backend() const noexcept override;
     [[nodiscard]] std::span<const Agent> agents() const noexcept override;
     [[nodiscard]] std::vector<std::unique_ptr<Rule>>& rules() noexcept override;
+    [[nodiscard]] const std::vector<std::unique_ptr<Rule>>& rules() const noexcept override;
     [[nodiscard]] std::vector<std::unique_ptr<Intervention>>& interventions() noexcept override;
 
     [[nodiscard]] const World& world() const noexcept;

@@ -275,6 +275,7 @@ void CpuSimulation::setCount(std::size_t count) {
 Backend CpuSimulation::backend() const noexcept { return Backend::CPU; }
 std::span<const Agent> CpuSimulation::agents() const noexcept { return agents_; }
 std::vector<std::unique_ptr<Rule>>& CpuSimulation::rules() noexcept { return rules_; }
+const std::vector<std::unique_ptr<Rule>>& CpuSimulation::rules() const noexcept { return rules_; }
 std::vector<std::unique_ptr<Intervention>>& CpuSimulation::interventions() noexcept { return interventions_; }
 const World& CpuSimulation::world() const noexcept { return world_; }
 

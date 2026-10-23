@@ -40,6 +40,7 @@ public:
     // between steps; null entries are not allowed. Rules expose their own UI
     // parameters without transferring ownership to the caller.
     [[nodiscard]] virtual std::vector<std::unique_ptr<Rule>>& rules() noexcept = 0;
+    [[nodiscard]] virtual const std::vector<std::unique_ptr<Rule>>& rules() const noexcept = 0;
     [[nodiscard]] virtual std::vector<std::unique_ptr<Intervention>>&
         interventions() noexcept = 0;
 

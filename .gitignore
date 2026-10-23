@@ -6,3 +6,5 @@
 *.suo
 *.spv
 imgui.ini
+emergences.conf
+emergences.conf.tmp*

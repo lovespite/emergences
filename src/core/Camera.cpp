@@ -32,6 +32,29 @@ bool finiteVector(const glm::vec3& value) {
 
 Camera::Camera() { reset(); }
 
+Camera::State Camera::state() const {
+    return {target_, yaw_, pitch_, distance_};
+}
+
+void Camera::setState(const State& state) {
+    if (!finiteVector(state.target) || !finiteDeltas(state.yaw, state.pitch) ||
+        !std::isfinite(state.distance)) {
+        return;
+    }
+    for (glm::length_t axis = 0; axis < 3; ++axis) {
+        target_[axis] = static_cast<float>(std::clamp(
+            static_cast<double>(state.target[axis]),
+            -maximumTargetCoordinate, maximumTargetCoordinate));
+    }
+    // Preserve the rounded float endpoints that orbit() can produce; reducing
+    // float(pi) in doubles would otherwise flip its sign on every restore.
+    yaw_ = std::abs(state.yaw) <= std::numbers::pi_v<float> ? state.yaw :
+        static_cast<float>(std::remainder(static_cast<double>(state.yaw), 2.0 * std::numbers::pi));
+    pitch_ = static_cast<float>(std::clamp(
+        static_cast<double>(state.pitch), -maximumPitch, maximumPitch));
+    distance_ = std::clamp(state.distance, minimumDistance, maximumDistance);
+}
+
 glm::vec3 Camera::right() const {
     return {std::cos(yaw_), 0.0F, -std::sin(yaw_)};
 }

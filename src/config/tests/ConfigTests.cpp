@@ -1,0 +1,276 @@
+#include "config/AppConfig.h"
+
+#include <chrono>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <iterator>
+#include <limits>
+#include <stdexcept>
+#include <string>
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
+namespace {
+
+using emergences::config::ConfigFile;
+using emergences::config::Settings;
+
+void require(bool condition, const char* message) {
+    if (!condition) {
+        throw std::runtime_error(message);
+    }
+}
+
+struct ScratchDirectory {
+    std::filesystem::path path = std::filesystem::current_path() /
+        ("config-tests-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+
+    ScratchDirectory() {
+        require(std::filesystem::create_directory(path), "Must create unique test directory");
+    }
+    ~ScratchDirectory() {
+        std::error_code error;
+        std::filesystem::remove_all(path, error);
+    }
+};
+
+void write(const std::filesystem::path& path, const std::string& text) {
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    output << text;
+    output.close();
+    require(!output.fail(), "Test fixture write failed");
+}
+
+std::string read(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    require(input.good(), "Test fixture read failed");
+    return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+}
+
+void missingFileCreatesDefaults(const std::filesystem::path& directory) {
+    const auto path = directory / std::filesystem::path(u8"配置.cfg");
+    ConfigFile config(path);
+    require(config.path() == path, "Config must retain Unicode path");
+    require(config.settings() == Settings{}, "Missing config uses defaults");
+    require(config.warnings().empty() && config.lastError().empty(), "Missing config is normal");
+    require(!std::filesystem::exists(path), "Loading must not create a config");
+    require(config.save(), "First save must create config");
+    const auto text = read(path);
+    require(text.find("scenarios.boids.cohesion_weight = 0.11\n") != std::string::npos,
+            "Floating point values must remain readable");
+    require(text.find("view.agent_shape = arrow\n") != std::string::npos,
+            "Enums must use symbolic names");
+    require(text.find("view.fullscreen = off\n") != std::string::npos,
+            "Booleans must use on/off");
+    ConfigFile reloaded(path);
+    require(reloaded.settings() == config.settings() && reloaded.warnings().empty(),
+            "Saved defaults must round trip without warnings");
+    const auto oldTime = std::filesystem::file_time_type::clock::now() - std::chrono::hours(24);
+    std::filesystem::last_write_time(path, oldTime);
+    const auto recordedTime = std::filesystem::last_write_time(path);
+    require(config.save(), "Unchanged save must succeed");
+    require(std::filesystem::last_write_time(path) == recordedTime,
+            "Unchanged saves must not touch disk");
+}
+
+void examplesAndOrder(const std::filesystem::path& directory) {
+    const auto path = directory / "examples.cfg";
+    write(path, "\xEF\xBB\xBF# UTF-8 BOM and CRLF\r\n"
+                "  scenarios.boids.cohesion_weight = 0.11 # flocking\r\n"
+                "scenarios.boids.min_speed = 8\r\n"
+                "scenarios.boids.max_speed = 14\r\n"
+                "view.fullscreen = on\r\n"
+                "view.agent_shape = arrow\r\n"
+                "view.grid = false ; boolean alias\r\n"
+                "view.bounds = 0\r\n"
+                "view.panel_visible = 1\r\n"
+                "scenarios.boids.cursor.enabled = true\r\n"
+                "scenarios.boids.backend = cpu\r\n"
+                "scenarios.boids.boundary = bounce\r\n"
+                "scenarios.boids.cursor.mode = attract\r\n"
+                "view.camera.target_x = -2.5e1\r\n");
+    ConfigFile example(path);
+    const auto& settings = example.settings();
+    require(example.warnings().empty(), "User examples must parse without warnings");
+    require(settings.boids.cohesionWeight == 0.11F && settings.boids.minSpeed == 8.0F &&
+                settings.boids.maxSpeed == 14.0F, "User's numeric configuration must load");
+    require(settings.view.fullscreen && settings.view.agentShape == 0 && !settings.view.grid &&
+                !settings.view.bounds && settings.view.panelVisible, "View keys and boolean aliases must load");
+    require(!settings.boids.gpu && settings.boids.bounce && settings.boids.cursor &&
+                settings.boids.cursorAttract, "Named Boids modes must load");
+    require(settings.camera.targetX == -25.0F, "Signed scientific notation must load");
+    for (const auto& limits : {
+             "scenarios.boids.min_speed = 14\nscenarios.boids.max_speed = 20\n",
+             "scenarios.boids.max_speed = 20\nscenarios.boids.min_speed = 14\n",
+             "scenarios.boids.max_speed = 0.5\nscenarios.boids.min_speed = 0\n",
+             "scenarios.boids.min_speed = 0\nscenarios.boids.max_speed = 0.5\n"}) {
+        write(path, limits);
+        ConfigFile order(path);
+        require(order.warnings().empty(), "Speed limits must validate after all assignments");
+    }
+}
+
+void invalidValuesKeepPrevious(const std::filesystem::path& directory) {
+    const auto path = directory / "invalid.cfg";
+    write(path, "scenarios.boids.cohesion_weight = 0.8\n"
+                "scenarios.boids.cohesion_weight = nan\n"
+                "scenarios.boids.cohesion_weight = 1.3garbage\n"
+                "scenarios.boids.count = 8.5\n"
+                "scenarios.boids.count = 21474836480\n"
+                "scenarios.boids.count = 100001\n"
+                "scenarios.boids.alignment_radius = -1\n"
+                "scenarios.boids.separation_weight = inf\n"
+                "scenarios.boids.max_acceleration = 1e100\n"
+                "scenarios.boids.cursor.radius = 21\n"
+                "scenarios.boids.cursor.strength = 101\n"
+                "scenarios.boids.cursor.plane_height = -40\n"
+                "view.fullscreen = yes\n"
+                "view.agent_shape = triangle\n"
+                "view.color = DIRECTION\n"
+                "view.agent_size = 0.01\n"
+                "view.camera.yaw = 4\n"
+                "view.camera.pitch = 1.57\n"
+                "view.camera.distance = 2001\n"
+                "view.camera.target_z = -100001\n"
+                "scenarios.preview.count = -1\n"
+                "scenarios.preview.color = density\n"
+                "scenarios.preview.agent_size = 2\n"
+                "view.grid =\n"
+                "future.unknown = keep\n"
+                "broken syntax\n");
+    ConfigFile config(path);
+    auto expected = Settings{};
+    expected.boids.cohesionWeight = 0.8F;
+    require(config.settings() == expected, "Invalid values must retain defaults or last valid assignment");
+    require(config.warnings().size() == 25, "Every invalid or unknown entry needs a diagnostic");
+    require(config.warnings().front().find("Line 2 (scenarios.boids.cohesion_weight)") != std::string::npos,
+            "Diagnostics must name the source line and key");
+    require(config.lastError().empty(), "Parse diagnostics must not disable saving");
+    write(path, "scenarios.boids.min_speed = 20\nscenarios.boids.max_speed = 14\n");
+    ConfigFile invalidPair(path);
+    require(invalidPair.settings().boids.minSpeed == Settings{}.boids.minSpeed &&
+                invalidPair.settings().boids.maxSpeed == Settings{}.boids.maxSpeed &&
+                invalidPair.warnings().size() == 1, "Inconsistent speed pair must restore valid defaults");
+    write(path, "scenarios.boids.min_speed = 8\nscenarios.boids.max_speed = 14\n"
+                "scenarios.boids.min_speed = 20\n");
+    ConfigFile invalidDuplicate(path);
+    require(invalidDuplicate.settings().boids.minSpeed == 8.0F &&
+                invalidDuplicate.settings().boids.maxSpeed == 14.0F,
+            "A conflicting duplicate must restore the previous valid speed pair");
+}
+
+void completeRoundTripAndComments(const std::filesystem::path& directory) {
+    const auto path = directory / "roundtrip.cfg";
+    write(path, "# My hand-edited configuration\n"
+                "future.plugin = some opaque value ; retain me\n"
+                "\n"
+                "  view.fullscreen = off # display preference\n"
+                "view.fullscreen = off ; duplicate is updated too\n"
+                "scenarios.boids.min_speed = 1\n");
+    ConfigFile config(path);
+    auto& s = config.settings();
+    s.boids = {99999, false, true, 0.123456789F, 14.5F, 4.9F, 0.5F, 3.1F, 7.0F,
+               8.0F, 14.0F, 59.0F, true, true, true, 19.5F, 99.9F, -38.0F};
+    s.view = {true, false, false, false, false, 1, 3, 1.25F};
+    s.camera = {-1000.0F, 1000.0F, 123.456789F, -2.0F, -0.9F, 1999.5F};
+    s.preview = {19999, false, 2, 1.75F};
+    require(config.save(), "Complete config must save");
+    const auto text = read(path);
+    require(text.find("# My hand-edited configuration\n") == 0,
+            "Existing full-line comments must survive");
+    require(text.find("future.plugin = some opaque value ; retain me\n") != std::string::npos,
+            "Unknown settings must survive verbatim");
+    require(text.find("  view.fullscreen = on # display preference\n") != std::string::npos &&
+                text.find("view.fullscreen = on ; duplicate is updated too\n") != std::string::npos,
+            "Known keys must update while retaining comments and indentation");
+    ConfigFile reloaded(path);
+    require(reloaded.settings() == s, "Every setting must round trip exactly, including float values");
+    s.preview.count = 100;
+    require(config.save(), "Subsequent changed snapshot must save");
+    const auto twice = read(path);
+    const std::string key = "scenarios.preview.count = ";
+    require(twice.find(key) == twice.rfind(key), "Subsequent saves must not append duplicate default keys");
+    require(ConfigFile(path).settings() == s, "Second snapshot must round trip");
+    s.view.agentSize = std::numeric_limits<float>::quiet_NaN();
+    require(!config.save() && !config.lastError().empty(), "Invalid runtime values must not be saved");
+    require(read(path) == twice, "Rejected values must leave existing file intact");
+    s.view.agentSize = 1.0F;
+    s.view.agentShape = 99;
+    require(!config.save() && read(path) == twice, "Invalid runtime enums must leave existing file intact");
+}
+
+void ioFailures(const std::filesystem::path& directory) {
+    ConfigFile unreadable(directory);
+    require(!unreadable.lastError().empty() && !unreadable.save(),
+            "Unreadable configuration must diagnose and disable saving");
+    require(std::filesystem::is_directory(directory), "Unreadable path must remain intact");
+    ConfigFile noParent(directory / "missing-parent" / "config.cfg");
+    require(!noParent.save() && !noParent.lastError().empty(),
+            "A missing output directory must produce a nonthrowing save error");
+
+    const auto path = directory / "protected.cfg";
+    write(path, "# Keep this file\nview.fullscreen = off\n");
+    const auto original = read(path);
+#ifdef _WIN32
+    HANDLE locked = CreateFileW(path.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING,
+                                FILE_ATTRIBUTE_NORMAL, nullptr);
+    require(locked != INVALID_HANDLE_VALUE, "Must lock test fixture");
+    ConfigFile cannotRead(path);
+    const bool readWasBlocked = !cannotRead.lastError().empty() && !cannotRead.save();
+    CloseHandle(locked);
+    require(readWasBlocked && read(path) == original, "Read failures must not overwrite the original");
+    require(!cannotRead.save(), "A failed initial read must remain protected even after unlock");
+
+    ConfigFile cannotReplace(path);
+    cannotReplace.settings().view.fullscreen = true;
+    locked = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                         FILE_ATTRIBUTE_NORMAL, nullptr);
+    require(locked != INVALID_HANDLE_VALUE, "Must lock replacement test fixture");
+    const bool replacementBlocked = !cannotReplace.save() && !cannotReplace.lastError().empty();
+    CloseHandle(locked);
+    require(replacementBlocked && read(path) == original,
+            "Failed atomic replacement must preserve the previous configuration");
+    for (const auto& child : std::filesystem::directory_iterator(directory)) {
+        require(!child.path().filename().native().starts_with(L"protected.cfg.tmp-"),
+                "Failed replacement must clean its temporary file");
+    }
+    require(cannotReplace.save() && cannotReplace.lastError().empty(),
+            "Failed writes must be retryable after the failure is resolved");
+    require(ConfigFile(path).settings().view.fullscreen, "Retry must persist the pending settings");
+#else
+    ConfigFile cannotReplace(path);
+    cannotReplace.settings().view.fullscreen = true;
+    const auto backup = directory / "protected.backup";
+    std::filesystem::rename(path, backup);
+    std::filesystem::create_directory(path);
+    require(!cannotReplace.save() && !cannotReplace.lastError().empty(),
+            "Replacement with a directory must fail safely");
+    require(read(backup) == original && std::filesystem::is_directory(path),
+            "Failed replacement must preserve original content and destination");
+#endif
+}
+
+}  // namespace
+
+int main() {
+    try {
+        const ScratchDirectory scratch;
+        missingFileCreatesDefaults(scratch.path);
+        examplesAndOrder(scratch.path);
+        invalidValuesKeepPrevious(scratch.path);
+        completeRoundTripAndComments(scratch.path);
+        ioFailures(scratch.path);
+        std::cout << "Configuration settings tests passed\n";
+        return EXIT_SUCCESS;
+    } catch (const std::exception& error) {
+        std::cerr << "Configuration settings test failed: " << error.what() << '\n';
+        return EXIT_FAILURE;
+    }
+}

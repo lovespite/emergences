@@ -147,8 +147,13 @@ try {
     if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
         throw "Build finished but the executable is missing: $executable"
     }
+    $configSample = Join-Path $outputDirectory 'emergences.conf.example'
+    if (-not (Test-Path -LiteralPath $configSample -PathType Leaf)) {
+        throw "Build finished but the configuration sample is missing: $configSample"
+    }
     Write-Host "`nBuild succeeded: $executable" -ForegroundColor Green
     Write-Host "Keep the adjacent shaders directory with the executable: $outputDirectory\shaders"
+    Write-Host "Include the annotated configuration sample: $configSample"
     if ($Run) {
         Invoke-BuildCommand -FilePath $executable -Arguments @() -WorkingDirectory $outputDirectory
     }

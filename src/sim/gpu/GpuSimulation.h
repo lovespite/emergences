@@ -41,6 +41,7 @@ public:
     void setMotionLimits(const MotionLimits&) override;
     void setAgents(std::span<const Agent>) override;
     [[nodiscard]] std::vector<std::unique_ptr<Rule>>& rules() noexcept override { return rules_; }
+    [[nodiscard]] const std::vector<std::unique_ptr<Rule>>& rules() const noexcept override { return rules_; }
     [[nodiscard]] std::vector<std::unique_ptr<Intervention>>& interventions() noexcept override {
         return interventions_;
     }

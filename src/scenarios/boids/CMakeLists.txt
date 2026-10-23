@@ -1,12 +1,12 @@
 add_library(emergences_boids STATIC Alignment.cpp Cohesion.cpp Separation.cpp
-    BoidsScene.cpp BoidsRuleKernel.cpp BoidsGpu.cpp CursorIntervention.cpp CursorRepel.cpp CursorAttract.cpp)
+    BoidsScene.cpp BoidsConfig.cpp BoidsRuleKernel.cpp BoidsGpu.cpp CursorIntervention.cpp CursorRepel.cpp CursorAttract.cpp)
 add_library(emergences::boids ALIAS emergences_boids)
-target_link_libraries(emergences_boids PUBLIC emergences::sim)
+target_link_libraries(emergences_boids PUBLIC emergences::sim emergences::config)
 emergences_target_defaults(emergences_boids)
 
 if(BUILD_TESTING)
     set(header_checks)
-    foreach(header Alignment Cohesion Separation BoidsRuleKernel BoidsScene BoidsGpu CursorIntervention CursorRepel CursorAttract)
+    foreach(header Alignment Cohesion Separation BoidsRuleKernel BoidsScene BoidsConfig BoidsGpu CursorIntervention CursorRepel CursorAttract)
         set(check "${CMAKE_CURRENT_BINARY_DIR}/header_checks/${header}.cpp")
         file(GENERATE OUTPUT "${check}" CONTENT "#include \"scenarios/boids/${header}.h\"\n")
         list(APPEND header_checks "${check}")
@@ -41,7 +41,11 @@ if(BUILD_TESTING)
     target_link_libraries(emergences_boids_backend_tests PRIVATE emergences::boids)
     emergences_target_defaults(emergences_boids_backend_tests)
     add_test(NAME boids_backend COMMAND emergences_boids_backend_tests)
-    set_tests_properties(boids_rules boids_simulation boids_kernel boids_cursor boids_scene boids_backend
+    add_executable(emergences_boids_config_tests tests/BoidsConfigTests.cpp)
+    target_link_libraries(emergences_boids_config_tests PRIVATE emergences::boids)
+    emergences_target_defaults(emergences_boids_config_tests)
+    add_test(NAME boids_config COMMAND emergences_boids_config_tests)
+    set_tests_properties(boids_rules boids_simulation boids_kernel boids_cursor boids_scene boids_backend boids_config
         PROPERTIES LABELS "cpu;sim;boids" TIMEOUT 30)
 endif()
 
@@ -49,7 +53,7 @@ if(EMERGENCES_BUILD_APP)
     add_executable(emergences main.cpp BoidsApp.cpp LiveBoids.cpp RenderPreview.cpp)
     if(WIN32)
         set_target_properties(emergences PROPERTIES WIN32_EXECUTABLE TRUE)
-        target_link_libraries(emergences PRIVATE user32)
+        target_link_libraries(emergences PRIVATE user32 shell32)
         if(MSVC)
             # Retain normal main/argv and CRT initialization with the GUI subsystem.
             target_link_options(emergences PRIVATE /ENTRY:mainCRTStartup)
@@ -65,6 +69,19 @@ if(EMERGENCES_BUILD_APP)
     emergences_target_defaults(emergences)
     emergences_add_shaders(emergences smoke/triangle.vert smoke/triangle.frag
         particle.vert particle.frag grid.vert grid.frag compute/boids.comp)
+
+    # Run even when no C++ source changed, so the distributed reference stays
+    # current after documentation edits. Never overwrite the user's .conf file.
+    add_custom_target(emergences_config_sample
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${PROJECT_BINARY_DIR}/$<CONFIG>"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${PROJECT_SOURCE_DIR}/emergences.conf.example"
+            "${PROJECT_BINARY_DIR}/$<CONFIG>/emergences.conf.example"
+        DEPENDS "${PROJECT_SOURCE_DIR}/emergences.conf.example"
+        BYPRODUCTS "${PROJECT_BINARY_DIR}/$<CONFIG>/emergences.conf.example"
+        COMMENT "Copying annotated configuration sample"
+        VERBATIM)
+    add_dependencies(emergences emergences_config_sample)
 
     if(BUILD_TESTING AND EMERGENCES_ENABLE_GPU_TESTS)
         add_test(NAME vulkan_triangle COMMAND emergences --smoke-test)

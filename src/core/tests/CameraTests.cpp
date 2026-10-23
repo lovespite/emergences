@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <limits>
+#include <numbers>
 #include <stdexcept>
 
 namespace {
@@ -167,6 +168,61 @@ void invalidAndExtremeInputs() {
     requireBasis(camera);
 }
 
+void stateRestoration() {
+    Camera original;
+    original.orbit(125.0F, -42.0F);
+    original.pan(-95.0F, 63.0F, 720.0F);
+    original.zoom(3.0F);
+    const auto saved = original.state();
+    Camera restored;
+    restored.setState(saved);
+    const auto actual = restored.state();
+    require(near(actual.target, saved.target) && actual.yaw == saved.yaw &&
+                actual.pitch == saved.pitch && actual.distance == saved.distance,
+            "Camera state must preserve target, angles, and distance");
+    require(near(restored.position(), original.position()) &&
+                near(restored.right(), original.right()) && near(restored.up(), original.up()),
+            "Restored camera must preserve the rendered viewpoint");
+    for (const float yaw : {-std::numbers::pi_v<float>, std::numbers::pi_v<float>}) {
+        auto boundary = saved;
+        boundary.yaw = yaw;
+        restored.setState(boundary);
+        restored.setState(restored.state());
+        require(restored.state().yaw == yaw, "Rounded yaw boundaries must survive repeated restoration");
+    }
+    restored.setState(saved);
+
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float infinity = std::numeric_limits<float>::infinity();
+    for (const float value : {nan, infinity, -infinity}) {
+        for (int field = 0; field < 6; ++field) {
+            auto invalid = saved;
+            if (field < 3) invalid.target[field] = value;
+            else if (field == 3) invalid.yaw = value;
+            else if (field == 4) invalid.pitch = value;
+            else invalid.distance = value;
+            restored.setState(invalid);
+            require(near(restored.position(), original.position()) &&
+                        near(restored.right(), original.right()) && near(restored.up(), original.up()),
+                    "A nonfinite state must leave the entire camera unchanged");
+        }
+    }
+
+    const float huge = std::numeric_limits<float>::max();
+    restored.setState({{huge, -huge, huge}, huge, huge, huge});
+    const auto clamped = restored.state();
+    require(clamped.target == glm::vec3(100000.0F, -100000.0F, 100000.0F),
+            "Restored target must stay inside the pan limits");
+    require(std::abs(clamped.yaw) <= 3.141593F && clamped.pitch > 1.5F && clamped.pitch < 1.57F,
+            "Restored angles must be normalized and stop short of the poles");
+    require(clamped.distance == 2000.0F, "Restored distance must respect the maximum zoom");
+    requireBasis(restored);
+    restored.setState({{}, -huge, -huge, -huge});
+    require(restored.state().distance == 3.0F && restored.state().pitch > -1.57F,
+            "Restored distance and pitch must respect their lower limits");
+    requireBasis(restored);
+}
+
 void screenRaysAndPicking() {
     Camera camera;
     const auto centerRay = camera.screenRay(0.5F, 0.5F, 16.0F / 9.0F);
@@ -258,6 +314,7 @@ int main() {
         orbitAndZoom();
         panAndReset();
         invalidAndExtremeInputs();
+        stateRestoration();
         screenRaysAndPicking();
         invalidPickingInputs();
         std::cout << "Camera tests passed\n";

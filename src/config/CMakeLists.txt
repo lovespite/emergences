@@ -1,0 +1,13 @@
+add_library(emergences_config STATIC AppConfig.cpp)
+add_library(emergences::config ALIAS emergences_config)
+target_compile_features(emergences_config PUBLIC cxx_std_20)
+target_include_directories(emergences_config PUBLIC "${PROJECT_SOURCE_DIR}/src")
+emergences_target_defaults(emergences_config)
+
+if(BUILD_TESTING)
+    add_executable(emergences_config_tests tests/ConfigTests.cpp)
+    target_link_libraries(emergences_config_tests PRIVATE emergences::config)
+    emergences_target_defaults(emergences_config_tests)
+    add_test(NAME config_settings COMMAND emergences_config_tests)
+    set_tests_properties(config_settings PROPERTIES LABELS "cpu;config" TIMEOUT 30)
+endif()

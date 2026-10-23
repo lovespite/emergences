@@ -16,12 +16,23 @@ public:
         glm::vec3 direction;
     };
 
+    struct State {
+        glm::vec3 target;
+        float yaw;
+        float pitch;
+        float distance;
+    };
+
     Camera();
 
     [[nodiscard]] glm::mat4 viewProjection(float aspect) const;
     [[nodiscard]] glm::vec3 right() const;
     [[nodiscard]] glm::vec3 up() const;
     [[nodiscard]] glm::vec3 position() const;
+    [[nodiscard]] State state() const;
+    // Angles use radians. Nonfinite states are ignored; finite values are
+    // normalized/clamped to the same limits as orbit, pan, and zoom.
+    void setState(const State& state);
 
     // Normalized viewport coordinates are [0, 1], with (0, 0) at the top left.
     // Rays start at the eye with a unit direction. Invalid inputs return nullopt.

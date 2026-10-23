@@ -36,6 +36,7 @@ elseif(EMERGENCES_ENABLE_GPU_TESTS)
 endif()
 
 include(cmake/Dependencies.cmake)
+add_subdirectory(src/config)
 add_subdirectory(src/sim)
 
 if(EMERGENCES_BUILD_APP)

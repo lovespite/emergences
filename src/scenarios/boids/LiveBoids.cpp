@@ -1,5 +1,7 @@
 #include "scenarios/boids/BoidsApp.h"
 #include "scenarios/boids/BoidsScene.h"
+#include "scenarios/boids/BoidsConfig.h"
+#include "config/AppConfig.h"
 #include "scenarios/boids/BoidsGpu.h"
 #include "scenarios/boids/CursorAttract.h"
 #include "scenarios/boids/CursorRepel.h"
@@ -31,6 +33,7 @@ namespace emergences::scenarios::boids {
 namespace {
 
 struct Controls {
+    bool preferGpu = true;
     bool panelVisible = true;
     int shape = 0;
     int color = 0;
@@ -67,7 +70,7 @@ bool slider(const char* label, float& value, float minimum, float maximum) {
 
 Actions drawPanel(BoidsScene& scene, Controls& controls, core::Camera& camera,
                   const core::Context& context, const core::FrameRenderer& renderer,
-                  bool& fullscreen) {
+                  bool& fullscreen, const config::ConfigFile* config) {
     Actions actions;
     ImGui::SetNextWindowPos(ImVec2(18, 18), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(350, std::max(180.0F,
@@ -84,6 +87,7 @@ Actions drawPanel(BoidsScene& scene, Controls& controls, core::Camera& camera,
                                   scene.backend() == backend)) {
                 try {
                     scene.setBackend(backend);
+                    controls.preferGpu = backend == sim::Backend::GPU;
                     controls.backendError.clear();
                     actions.skipElapsed = true;
                 } catch (const std::exception& error) {
@@ -95,6 +99,13 @@ Actions drawPanel(BoidsScene& scene, Controls& controls, core::Camera& camera,
         ImGui::EndCombo();
     }
     if (!controls.backendError.empty()) ImGui::TextWrapped("%s", controls.backendError.c_str());
+    if (config) {
+        if (!config->lastError().empty()) ImGui::TextWrapped("Settings: %s", config->lastError().c_str());
+        if (!config->warnings().empty() && ImGui::TreeNode("Settings warnings")) {
+            for (const auto& warning : config->warnings()) ImGui::TextWrapped("%s", warning.c_str());
+            ImGui::TreePop();
+        }
+    }
     auto& simulation = scene.currentSimulation();
     int count = static_cast<int>(simulation.count());
     if (ImGui::SliderInt("Agents", &count, 0, 100000, "%d", ImGuiSliderFlags_AlwaysClamp)) {
@@ -383,9 +394,12 @@ void gpuSmokeSettings(std::size_t frame, BoidsScene& scene, Controls& controls, 
 
 } // namespace
 
-int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, bool gpuSmokeTest) {
+int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, bool gpuSmokeTest,
+                  config::ConfigFile* config) {
     const bool anySmokeTest = smokeTest || gpuSmokeTest;
+    if (anySmokeTest) config = nullptr;
     core::Window window{1280, 800, "Emergences | Boids"};
+    if (config) window.setFullscreen(config->settings().view.fullscreen);
     core::Context context{window};
     std::cout << "Vulkan initialized on: " << context.deviceName() << '\n';
     std::cout << "Validation layer: " << (context.validationEnabled() ? "enabled" : "disabled") << '\n';
@@ -410,11 +424,31 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
         core::Camera camera;
         BoidsScene scene;
         Controls controls;
+        if (config) {
+            const auto& settings = config->settings();
+            applyBoidsSettings(scene, settings.boids);
+            controls.preferGpu = settings.boids.gpu;
+            controls.panelVisible = settings.view.panelVisible;
+            controls.shape = settings.view.agentShape;
+            controls.color = settings.view.colorMode;
+            controls.size = settings.view.agentSize;
+            controls.grid = settings.view.grid;
+            controls.bounds = settings.view.bounds;
+            controls.antialiasing = settings.view.antialiasing;
+            controls.cursor = settings.boids.cursor;
+            controls.cursorMode = settings.boids.cursorAttract ? 1 : 0;
+            controls.radius = settings.boids.cursorRadius;
+            controls.strength = settings.boids.cursorStrength;
+            controls.planeHeight = settings.boids.cursorPlaneHeight;
+            const auto& savedCamera = settings.camera;
+            camera.setState({{savedCamera.targetX, savedCamera.targetY, savedCamera.targetZ},
+                             savedCamera.yaw, savedCamera.pitch, savedCamera.distance});
+        }
         try {
             scene.initializeGpu(compute, (shaderDirectory / "compute/boids.comp.spv").string());
-            // CPU-specific regression fixtures keep their original path. Normal
-            // interactive launches start on GPU and retain CPU as a fallback.
-            if (!smokeTest) scene.setBackend(sim::Backend::GPU);
+            // Keep the preference when GPU initialization fails, so a temporary
+            // device problem does not permanently change the saved backend.
+            if (!smokeTest && controls.preferGpu) scene.setBackend(sim::Backend::GPU);
         } catch (const std::exception& error) {
             if (gpuSmokeTest) throw;
             controls.backendError = std::string{"GPU compute unavailable: "} + error.what();
@@ -426,8 +460,37 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
         auto& attract = *attractOwner;
         scene.simulation().interventions().push_back(std::move(repelOwner));
         scene.simulation().interventions().push_back(std::move(attractOwner));
+        std::string reportedConfigError;
+        const auto saveSettings = [&] {
+            if (!config) return;
+            auto& settings = config->settings();
+            captureBoidsSettings(scene, settings.boids);
+            settings.boids.gpu = controls.preferGpu;
+            settings.boids.cursor = controls.cursor;
+            settings.boids.cursorAttract = controls.cursorMode == 1;
+            settings.boids.cursorRadius = controls.radius;
+            settings.boids.cursorStrength = controls.strength;
+            settings.boids.cursorPlaneHeight = controls.planeHeight;
+            settings.view.fullscreen = window.isFullscreen();
+            settings.view.panelVisible = controls.panelVisible;
+            settings.view.agentShape = controls.shape;
+            settings.view.colorMode = controls.color;
+            settings.view.agentSize = controls.size;
+            settings.view.grid = controls.grid;
+            settings.view.bounds = controls.bounds;
+            settings.view.antialiasing = controls.antialiasing;
+            const auto state = camera.state();
+            settings.camera = {state.target.x, state.target.y, state.target.z,
+                               state.yaw, state.pitch, state.distance};
+            if (!config->save() && config->lastError() != reportedConfigError) {
+                std::cerr << "[Config] " << config->lastError() << '\n';
+            }
+            reportedConfigError = config->lastError();
+        };
+        saveSettings();
         std::vector<core::Particle> renderParticles;
         auto previous = std::chrono::steady_clock::now();
+        auto nextSettingsSave = previous + std::chrono::seconds{1};
         const auto deadline = previous + std::chrono::seconds{55};
         while (!window.shouldClose()) {
             window.pollEvents();
@@ -469,7 +532,7 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
                     if (smokeTest) smokeSettings(presentedFrames, scene, controls, camera, actions);
                     if (gpuSmokeTest) gpuSmokeSettings(presentedFrames, scene, controls, actions);
                     if (controls.panelVisible) {
-                        const auto panelActions = drawPanel(scene, controls, camera, context, renderer, fullscreen);
+                        const auto panelActions = drawPanel(scene, controls, camera, context, renderer, fullscreen, config);
                         actions.reset |= panelActions.reset;
                         actions.step |= panelActions.step;
                         actions.skipElapsed |= panelActions.skipElapsed;
@@ -610,6 +673,10 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
                 });
             // Finish submitting the current frame before changing the native surface.
             if (fullscreen != window.isFullscreen()) window.setFullscreen(fullscreen);
+            if (config && now >= nextSettingsSave) {
+                saveSettings();
+                nextSettingsSave = now + std::chrono::seconds{1};
+            }
             if (anySmokeTest && presented) {
                 require(window.isFullscreen() == (presentedFrames >= 16 && presentedFrames < 20),
                         "Fullscreen request did not change the window mode");
@@ -626,6 +693,7 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
                 else if (presentedFrames >= 48 && renderer.swapchainGeneration() >= 3) break;
             }
         }
+        saveSettings();
         context.waitIdle();
         generations = renderer.swapchainGeneration();
     }

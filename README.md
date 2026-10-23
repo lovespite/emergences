@@ -18,6 +18,7 @@
 ```text
 build-host-x64/Release/emergences.exe
 build-host-x64/Release/shaders/
+build-host-x64/Release/emergences.conf.example
 ```
 
 构建结束后窗口会保留结果或错误信息；成功后可双击 `emergences.exe` 启动。脚本支持从任意工作目录调用，会尝试读取安装器保存的 `VULKAN_SDK` 环境变量，重复运行会增量构建。
@@ -36,7 +37,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -Configuration R
 
 默认只构建应用及其依赖；`-Test` 构建全部目标并运行 CPU / 相机测试，即使已有缓存启用了 GPU 测试，也会跳过带 `gpu` 标签的测试。Debug 产物位于 `build-host-x64/Debug/`。构建或测试失败会立即停止并返回非零退出码；`-Run` 仅在前面步骤成功后启动程序，并等待程序退出。
 
-这些脚本复用下面的 `vs2022`、`release` / `debug` CMake 预设，生成可执行文件和配套资源，不制作安装包。对外复制请使用 Release，并保留完整的 `shaders/` 目录；其他 Windows 电脑还需支持 Vulkan 的显卡驱动及 x64 Visual C++ 运行库（含 OpenMP 运行库）。
+这些脚本复用下面的 `vs2022`、`release` / `debug` CMake 预设，生成可执行文件和配套资源，不制作安装包。对外复制请使用 Release，将 `emergences.exe`、完整的 `shaders/` 目录和带逐项中文注释的 `emergences.conf.example` 一起分发；其他 Windows 电脑还需支持 Vulkan 的显卡驱动及 x64 Visual C++ 运行库（含 OpenMP 运行库）。
 
 ## 本机验收记录
 
@@ -81,6 +82,38 @@ cmake --build --preset debug
 - 左键拖动旋转、中键拖动平移、滚轮缩放；ImGui 捕获鼠标时，相机不响应相同输入。
 - **F11** 或面板顶部的 **Fullscreen (F11)** 开关切换全屏；使用窗口当前所在的显示器，退出全屏后恢复窗口位置、尺寸及最大化状态。
 - **F1** 显示 / 隐藏控制面板，隐藏后模拟和相机操作继续，再按一次即可恢复。全屏开关和 F1 同样适用于 `--render-preview`。
+
+### 配置文件与设置记忆
+
+交互启动时自动读取**可执行文件旁的 `emergences.conf`**，与启动时的工作目录无关。首次运行会生成完整配置；面板、快捷键和相机操作产生的设置修改每秒检查一次，有变化才写入，正常退出时再保存一次。下次启动恢复 Boids 参数、CPU / GPU 选择、暂停、光标力、全屏、面板显隐、形状、颜色、大小、抗锯齿、网格 / 边界及相机位置。记忆的是设置，个体位置与模拟时间仍从初始状态开始。
+
+文件采用点路径与 `key = value` 格式，例如：
+
+```ini
+scenarios.boids.cohesion_weight = 0.11
+scenarios.boids.min_speed = 8
+scenarios.boids.max_speed = 14
+scenarios.boids.backend = gpu
+scenarios.boids.cursor.enabled = off
+view.fullscreen = on
+view.agent_shape = arrow
+view.color = direction
+view.agent_size = 0.45
+view.panel_visible = on
+```
+
+支持空行、`#` / `;` 注释（包括行尾注释）、UTF-8 BOM 和 Windows 换行。布尔值使用 `on` / `off`；形状为 `arrow` / `dot`，颜色为 `direction` / `speed` / `density` / `solid`，边界 `scenarios.boids.boundary` 为 `wrap` / `bounce`。可编辑项及范围与面板一致；相机位于 `view.camera.*`，角度单位为弧度。可参考 [emergences.conf.example](emergences.conf.example)，或直接编辑首次运行生成的完整文件。
+
+构建应用时会将 `emergences.conf.example` 同步到可执行文件旁，Debug / Release 均包含。示例逐项解释用途、取值范围、默认值和相关行为；只修改示例注释后再次构建也会更新副本。程序不会自动加载 `.example` 文件；要使用其示例值，可在关闭程序后复制为 `emergences.conf`，或复制为另一配置文件并用 `--config` 指定。构建不会覆盖个人的 `emergences.conf`。
+
+建议关闭程序后编辑配置再启动，运行中的界面修改会自动写回同一文件。缺省项目沿用默认值；错误行、无效枚举、越界或非有限数值会给出带行号的提示并使用有效值 / 默认值，最小与最大速度在全部行解析完成后联合检查。注释和未知配置项在保存时保留。写入使用同目录临时文件替换原文件；无法读取或保存时在面板和终端报告，模拟仍可继续。
+
+```powershell
+.\build-host-x64\Release\emergences.exe --config D:\Profiles\flock.conf
+.\build-host-x64\Release\emergences.exe --no-config
+```
+
+`--config` 指定要读取和记忆的文件，相对路径以当前工作目录为基准，父目录需已存在。`--no-config` 仅使用默认值，不读写配置。所有冒烟测试也不读写配置。程序化预览共用全屏、形状、抗锯齿、网格 / 边界、面板显隐和相机设置，预览的数量、动画、大小及颜色单独保存在 `scenarios.preview.*`。删除配置文件后重新启动即可恢复默认设置；构建不会覆盖已有配置。
 
 Windows 版本启动时不创建控制台窗口。双击程序直接显示应用；从已有终端启动时保留日志输出，命令行帮助、版本和测试的重定向输出仍可使用。没有错误输出通道的交互启动失败会显示错误对话框。
 
@@ -143,10 +176,11 @@ cmake --build build/sim-serial --config Release
 ctest --test-dir build/sim-serial -C Release --output-on-failure
 ```
 
-启用 `BUILD_TESTING` 时，模拟层和场景库公共头文件分别独立编译，检查头文件自包含及 `Agent` 布局约束，同时注册以下九项无 Vulkan 测试：
+启用 `BUILD_TESTING` 时，模拟层和场景库公共头文件分别独立编译，检查头文件自包含及 `Agent` 布局约束，同时注册以下十一项无 Vulkan 测试：
 
 | CTest 名称 | 检查范围 |
 | --- | --- |
+| `config_settings` | 点路径语法、默认值、非法值、速度区间、Unicode 路径、完整保存 / 重读、注释保留和读写失败保护 |
 | `sim_world_grid` | Wrap / Bounce 边界、最短周期位移、空间哈希与全量查询对照、半径与无重复邻居语义 |
 | `sim_cpu` | 同步步进、规则加权、速度 / 加速度限幅、确定性初始化、重置 / 数量变化、干预和异常状态保持 |
 | `sim_cpu_parallel` | 串行 / 并行轨迹与参数变化、通用规则串行回退、工作线程异常的确定性与状态保持、干预在并行结束后执行 |
@@ -156,6 +190,7 @@ ctest --test-dir build/sim-serial -C Release --output-on-failure
 | `boids_scene` | 60 / 120 / 144 Hz 帧时间分割一致性、步数上限、暂停 / 单步 / 重置、显示颜色不修改模拟、周期密度与固定色阶 |
 | `boids_cursor` | 吸引 / 排斥方向、距离衰减、开关 / 零强度 / 零半径、周期接缝、非法输入与速度限制 |
 | `boids_backend` | 状态 / 参数 / 规则所有权迁移、时钟 / 暂停、GPU 重置、无隐式回读、传输失败保留活动状态 |
+| `boids_config` | 配置应用后的初始速度与重置、参数采集、规则顺序、零个体及活动 GPU 参数无回读 |
 
 这些测试也随完整应用构建注册。`boids_backend` 额外使用内存计算设备验证后端转移契约，不需要 Vulkan。
 
@@ -221,14 +256,15 @@ ctest --test-dir build-host-x64 -C Release --output-on-failure
 
 | CTest 名称 | 检查范围 |
 | --- | --- |
-| `camera_math` | 相机默认取景、Vulkan 深度 / Y 轴约定、旋转 / 平移 / 缩放、屏幕射线与平面拾取、重置和极端输入 |
+| `camera_math` | 相机默认取景、Vulkan 深度 / Y 轴约定、旋转 / 平移 / 缩放、屏幕射线与平面拾取、状态恢复、重置和极端输入 |
+| `window_fullscreen` | 全屏进入 / 退出、窗口状态恢复、F11 与 ImGui 回调衔接 |
 | `vulkan_triangle` | `--smoke-test` 的三角形呈现和交换链缩放 |
 | `vulkan_particles` | `--render-smoke-test` 的粒子、辅助线、面板、相机和缓冲扩容路径 |
 | `vulkan_boids` | `--boids-smoke-test` 的真实模拟上传、控制状态、光标力、四种颜色和缩放路径 |
 | `vulkan_gpu_boids` | `--gpu-smoke-test` 的 GPU 直接绘制、0 / 1 / 257 / 100000 个体、后端切换、暂停 / 单步 / 重置、颜色、边界、缩放和 MSAA |
 | `boids_gpu_compute` | 真实计算设备上的 CPU/GPU 规则对照、网格与边界、状态读回和十万个体计算检查 |
 
-四个呈现测试会短暂创建窗口并自动缩放；计算对照测试也需要可用的桌面和 Vulkan 设备。CTest 在任何 `[Vulkan validation]` 消息（包括资源销毁时的消息）出现时失败；Loader 的一般诊断仍会输出。GPU 测试默认关闭。完整套件包含九项无 Vulkan 模拟 / 场景测试、`camera_math`、四项呈现测试和一项 GPU 计算测试，合计十五项；单独模拟构建运行九项测试。
+四个呈现测试会短暂创建窗口并自动缩放；窗口测试和计算对照测试也需要可用的桌面和 Vulkan 设备。CTest 在任何 `[Vulkan validation]` 消息（包括资源销毁时的消息）出现时失败；Loader 的一般诊断仍会输出。GPU 测试默认关闭。完整套件包含十一项无 Vulkan 配置 / 模拟 / 场景测试、`camera_math`、`window_fullscreen`、四项呈现测试和一项 GPU 计算测试，合计十八项；单独模拟构建运行十一项测试。
 
 需要额外复查同步时，可在当前 PowerShell 会话设置 `$env:VK_LAYER_VALIDATE_SYNC = '1'` 后运行 `ctest --preset debug`，完成后以 `Remove-Item Env:VK_LAYER_VALIDATE_SYNC` 清除该会话设置。
 
@@ -236,6 +272,7 @@ ctest --test-dir build-host-x64 -C Release --output-on-failure
 
 | 位置 | 当前职责 |
 | --- | --- |
+| `src/config/` | 独立于 Vulkan 的点路径配置解析、校验与原子保存；支持设置记忆和注释保留 |
 | `src/core/` | Window / Context；带逐图像深度附件的 Swapchain；共享命令记录、双帧同步与呈现的 FrameRenderer；Pipeline / Buffer / Descriptor、VulkanComputeDevice；Camera、TriangleRenderer、ParticleRenderer、LineRenderer、ImGuiLayer |
 | `src/sim/` | `Agent`、`World`、`Rule`、`Intervention`、`Simulation`、`MotionLimits`、`ComputeDevice`；`cpu/` 下为 SpatialHash、RuleKernel 与 CpuSimulation，`gpu/` 下为 GpuSimulation |
 | `src/scenarios/boids/` | 纯 CPU 的三规则、BoidsRuleKernel、BoidsScene、光标干预及测试；LiveBoids 连接模拟 / 渲染 / 面板，保留程序化预览与三类呈现测试 |
