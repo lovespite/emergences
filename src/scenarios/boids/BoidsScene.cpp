@@ -9,6 +9,7 @@
 #include <glm/geometric.hpp>
 
 #include "scenarios/boids/Alignment.h"
+#include "scenarios/boids/BoidsGpu.h"
 #include "scenarios/boids/BoidsRuleKernel.h"
 #include "scenarios/boids/Cohesion.h"
 #include "scenarios/boids/Separation.h"
@@ -37,7 +38,7 @@ void validateColorMode(ColorMode mode) {
 } // namespace
 
 BoidsScene::BoidsScene(std::size_t count, std::uint32_t seed)
-    : simulation_{count, sim::World{glm::vec3{-40.0F}, glm::vec3{40.0F}}, seed} {
+    : seed_{seed}, simulation_{count, sim::World{glm::vec3{-40.0F}, glm::vec3{40.0F}}, seed} {
     simulation_.rules().push_back(std::make_unique<Separation>());
     simulation_.rules().push_back(std::make_unique<Alignment>());
     simulation_.rules().push_back(std::make_unique<Cohesion>());
@@ -45,8 +46,73 @@ BoidsScene::BoidsScene(std::size_t count, std::uint32_t seed)
     refreshColors(colorMode_);
 }
 
+BoidsScene::~BoidsScene() = default;
+
 sim::cpu::CpuSimulation& BoidsScene::simulation() noexcept { return simulation_; }
 const sim::cpu::CpuSimulation& BoidsScene::simulation() const noexcept { return simulation_; }
+sim::Simulation& BoidsScene::currentSimulation() noexcept {
+    return backend_ == sim::Backend::GPU ? static_cast<sim::Simulation&>(*gpuSimulation_)
+                                         : simulation_;
+}
+const sim::Simulation& BoidsScene::currentSimulation() const noexcept {
+    return backend_ == sim::Backend::GPU ? static_cast<const sim::Simulation&>(*gpuSimulation_)
+                                         : simulation_;
+}
+sim::Backend BoidsScene::backend() const noexcept { return backend_; }
+sim::gpu::GpuSimulation* BoidsScene::gpuSimulation() noexcept { return gpuSimulation_.get(); }
+const sim::gpu::GpuSimulation* BoidsScene::gpuSimulation() const noexcept {
+    return gpuSimulation_.get();
+}
+
+void BoidsScene::initializeGpu(sim::ComputeDevice& device, std::string shaderPath) {
+    if (backend_ == sim::Backend::GPU) {
+        throw std::logic_error("Switch to CPU before replacing the GPU simulation");
+    }
+    attachGpu(makeBoidsGpu(device, std::move(shaderPath), 0, simulation_.world(), seed_));
+}
+
+void BoidsScene::attachGpu(std::unique_ptr<sim::gpu::GpuSimulation> simulation) {
+    if (!simulation) {
+        throw std::invalid_argument("Cannot attach a null GPU simulation");
+    }
+    if (backend_ == sim::Backend::GPU) {
+        throw std::logic_error("Switch to CPU before replacing the GPU simulation");
+    }
+    gpuSimulation_ = std::move(simulation);
+}
+
+void BoidsScene::setBackend(sim::Backend backend) {
+    if (backend != sim::Backend::CPU && backend != sim::Backend::GPU) {
+        throw std::invalid_argument("Unknown simulation backend");
+    }
+    if (backend == backend_) {
+        return;
+    }
+    if (!gpuSimulation_) {
+        throw std::logic_error("No GPU simulation is attached");
+    }
+    auto& source = currentSimulation();
+    sim::Simulation& destination = backend == sim::Backend::GPU
+        ? static_cast<sim::Simulation&>(*gpuSimulation_) : simulation_;
+    if (backend == sim::Backend::GPU) {
+        // Validate before changing either backend's settings or rule ownership.
+        (void)encodeBoidsGpuRules(source.rules());
+        if (!destination.interventions().empty()) {
+            throw std::invalid_argument("GPU simulations do not support interventions");
+        }
+    }
+    const auto agents = source.readback();
+    destination.setWorld(source.world());
+    destination.setMotionLimits(source.motionLimits());
+    destination.setAgents(agents);
+    destination.rules().swap(source.rules());
+    // Everything after the transfer is nonthrowing. Source remains authoritative
+    // if a device allocation, upload, or readback fails above.
+    backend_ = backend;
+    accumulator_ = 0.0;
+    lastAdvanceLimited_ = false;
+    displayAgents_.clear();
+}
 
 std::size_t BoidsScene::advance(double elapsedSeconds, double workBudgetSeconds) {
     if (!std::isfinite(elapsedSeconds) || elapsedSeconds < 0.0) {
@@ -71,7 +137,7 @@ std::size_t BoidsScene::advance(double elapsedSeconds, double workBudgetSeconds)
     // partitions such as 60 Hz and 144 Hz produce the same fixed-step count.
     constexpr double roundingTolerance = FixedStepSeconds * 1.0e-12;
     while (steps < MaxStepsPerAdvance && accumulator_ + roundingTolerance >= FixedStepSeconds) {
-        simulation_.step(static_cast<float>(FixedStepSeconds));
+        currentSimulation().step(static_cast<float>(FixedStepSeconds));
         accumulator_ = std::max(0.0, accumulator_ - FixedStepSeconds);
         ++totalSteps_;
         ++steps;
@@ -102,7 +168,7 @@ void BoidsScene::setPaused(bool paused) noexcept {
 bool BoidsScene::paused() const noexcept { return paused_; }
 
 void BoidsScene::reset() {
-    simulation_.reset();
+    currentSimulation().reset();
     accumulator_ = 0.0;
     totalSteps_ = 0;
     lastAdvanceLimited_ = false;
@@ -114,7 +180,7 @@ bool BoidsScene::singleStep() {
     if (!paused_) {
         return false;
     }
-    simulation_.step(static_cast<float>(FixedStepSeconds));
+    currentSimulation().step(static_cast<float>(FixedStepSeconds));
     ++totalSteps_;
     return true;
 }
@@ -127,6 +193,13 @@ std::uint64_t BoidsScene::totalSteps() const noexcept { return totalSteps_; }
 
 std::span<const sim::Agent> BoidsScene::refreshColors(ColorMode mode) {
     validateColorMode(mode);
+    if (backend_ == sim::Backend::GPU) {
+        gpuSimulation_->refreshColors(static_cast<sim::gpu::ColorMode>(mode), DensityRadius,
+            static_cast<float>(DensitySaturationNeighbors));
+        colorMode_ = mode;
+        displayAgents_.clear();
+        return {};
+    }
     const auto agents = simulation_.agents();
     displayAgents_.assign(agents.begin(), agents.end());
     if (mode == ColorMode::Density) {

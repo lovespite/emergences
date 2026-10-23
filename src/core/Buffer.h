@@ -24,6 +24,8 @@ public:
 
     // Writes to host-visible memory and flushes noncoherent allocations when necessary.
     void write(const void* data, VkDeviceSize bytes, VkDeviceSize offset = 0);
+    // Invalidates noncoherent allocations before copying completed GPU writes.
+    void read(void* data, VkDeviceSize bytes, VkDeviceSize offset = 0) const;
 
 private:
     void cleanup() noexcept;

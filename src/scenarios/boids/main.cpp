@@ -41,17 +41,19 @@ int main(int argc, char** argv) {
     bool smokeTest = false;
     bool renderSmokeTest = false;
     bool boidsSmokeTest = false;
+    bool gpuSmokeTest = false;
     bool renderPreview = false;
     for (int index = 1; index < argc; ++index) {
         const std::string_view argument{argv[index]};
         if (argument == "--help" || argument == "-h") {
-            std::cout << "Usage: emergences [--smoke-test | --render-smoke-test | --boids-smoke-test | --render-preview | --version | --help]\n"
+            std::cout << "Usage: emergences [--smoke-test | --render-smoke-test | --boids-smoke-test | --gpu-smoke-test | --render-preview | --version | --help]\n"
                          "  --smoke-test  Present 12 triangle frames and verify two window resizes.\n"
                          "  --render-smoke-test  Verify particles, UI, buffer growth and window resizes.\n"
                          "  --boids-smoke-test  Verify live CPU Boids, controls, cursor forces and rendering.\n"
+                         "  --gpu-smoke-test  Verify GPU Boids rendering and CPU/GPU state transfers.\n"
                          "  --render-preview  Show the procedural renderer preview.\n"
                          "  --version     Print the application version.\n"
-                         "No options: interactive CPU Boids simulation (Phase 3).\n";
+                         "No options: interactive GPU Boids with CPU/GPU backend selection (Phase 4).\n";
             return 0;
         }
         if (argument == "--version") {
@@ -64,6 +66,8 @@ int main(int argc, char** argv) {
             renderSmokeTest = true;
         } else if (argument == "--boids-smoke-test") {
             boidsSmokeTest = true;
+        } else if (argument == "--gpu-smoke-test") {
+            gpuSmokeTest = true;
         } else if (argument == "--render-preview") {
             renderPreview = true;
         } else {
@@ -73,7 +77,7 @@ int main(int argc, char** argv) {
     }
 
     if (static_cast<int>(smokeTest) + static_cast<int>(renderSmokeTest) +
-        static_cast<int>(boidsSmokeTest) + static_cast<int>(renderPreview) > 1) {
+        static_cast<int>(boidsSmokeTest) + static_cast<int>(gpuSmokeTest) + static_cast<int>(renderPreview) > 1) {
         std::cerr << "Choose only one application mode.\n";
         return 2;
     }
@@ -82,7 +86,7 @@ int main(int argc, char** argv) {
         emergences::scenarios::boids::BoidsApp app;
         if (smokeTest) return app.runTriangle(shaderDirectory(), true);
         if (renderSmokeTest || renderPreview) return app.runPreview(shaderDirectory(), renderSmokeTest);
-        return app.run(shaderDirectory(), boidsSmokeTest);
+        return app.run(shaderDirectory(), boidsSmokeTest, gpuSmokeTest);
     } catch (const std::exception& error) {
         std::cerr << "Application failed: " << error.what() << '\n';
         return 1;

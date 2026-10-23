@@ -117,6 +117,31 @@ void Buffer::write(const void* data, VkDeviceSize bytes, VkDeviceSize offset) {
     }
 }
 
+void Buffer::read(void* data, VkDeviceSize bytes, VkDeviceSize offset) const {
+    if (offset > size_ || bytes > size_ - offset) {
+        throw std::out_of_range("Buffer read exceeds the buffer size");
+    }
+    if (bytes == 0) return;
+    if (mapped_ == nullptr) {
+        throw std::logic_error("Cannot read directly from a buffer without host-visible memory");
+    }
+    if (data == nullptr) throw std::invalid_argument("Buffer read requires a nonnull destination");
+    if ((memoryProperties_ & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == 0) {
+        const VkDeviceSize start = offset - offset % nonCoherentAtomSize_;
+        const VkDeviceSize end = offset + bytes;
+        const VkDeviceSize remainder = end % nonCoherentAtomSize_;
+        const VkDeviceSize padding = remainder == 0 ? 0 : nonCoherentAtomSize_ - remainder;
+        VkMappedMemoryRange range{};
+        range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+        range.memory = memory_;
+        range.offset = start;
+        range.size = (padding > allocationSize_ - end ? allocationSize_ : end + padding) - start;
+        check(vkInvalidateMappedMemoryRanges(device_, 1, &range), "Invalidating buffer memory");
+    }
+    std::memcpy(data, static_cast<const std::byte*>(mapped_) + static_cast<std::size_t>(offset),
+                static_cast<std::size_t>(bytes));
+}
+
 void Buffer::cleanup() noexcept {
     if (mapped_ != nullptr) {
         vkUnmapMemory(device_, memory_);

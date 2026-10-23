@@ -25,7 +25,7 @@ struct Preview {
     bool animate = true;
     bool grid = true;
     bool bounds = true;
-    bool antialiasing = false;
+    bool antialiasing = true;
     std::vector<core::Particle> particles;
 
     void generate() {

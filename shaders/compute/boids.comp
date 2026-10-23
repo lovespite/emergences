@@ -1,0 +1,255 @@
+#version 450
+
+// Matches sim::Agent (std430, 48 bytes). Rules mirror Separation.cpp,
+// Alignment.cpp and Cohesion.cpp; floats allow small CPU/GPU rounding differences.
+struct Agent {
+    vec3 position; float size;
+    vec3 velocity; float reserved;
+    vec3 color; uint id;
+};
+struct Rule { uint kind; float weight; float radius; uint padding; };
+layout(local_size_x = 128) in;
+layout(std430, binding = 0) readonly buffer Previous { Agent previous[]; };
+layout(std430, binding = 1) writeonly buffer Next { Agent next[]; };
+layout(std430, binding = 2) buffer Counts { uint cellCounts[]; };
+layout(std430, binding = 3) buffer Offsets { uint cellOffsets[]; };
+layout(std430, binding = 4) buffer Cursors { uint cellCursors[]; };
+layout(std430, binding = 5) buffer Indices { uint groupedIndices[]; };
+layout(std430, binding = 6) buffer Blocks { uint blockSums[]; };
+layout(std430, binding = 7) readonly buffer Parameters { uvec4 header; Rule rules[]; };
+layout(std430, binding = 8) writeonly buffer Display { Agent display[]; };
+layout(push_constant) uniform Push {
+    vec4 minimum;
+    vec4 maximum;
+    uvec4 counts; // agents, cells, stage, boundary (0 wrap, 1 bounce)
+    uvec4 dimensions; // xyz, blocks
+    vec4 dynamics; // dt, minimum speed, maximum speed, maximum acceleration
+    uvec4 miscellaneous; // seed, color mode
+    vec4 cellWidth;
+    vec4 colorParameters; // density radius, saturation
+} pc;
+
+shared uint scanValues[128];
+
+ivec3 cellOf(vec3 position) {
+    return clamp(ivec3(floor((position - pc.minimum.xyz) / pc.cellWidth.xyz)),
+        ivec3(0), ivec3(pc.dimensions.xyz) - 1);
+}
+uint cellIndex(ivec3 cell) {
+    return uint(cell.x) + pc.dimensions.x * (uint(cell.y) + pc.dimensions.y * uint(cell.z));
+}
+int adjacent(int center, int offset, int dimension) {
+    if (pc.counts.w == 0u) {
+        // Avoid duplicate periodic cells when the world spans one or two cells.
+        if ((dimension == 1 && offset != 0) || (dimension == 2 && offset == 1)) return -1;
+        return (center + offset + dimension) % dimension;
+    }
+    int candidate = center + offset;
+    return candidate < 0 || candidate >= dimension ? -1 : candidate;
+}
+vec3 displacement(vec3 from, vec3 to) {
+    vec3 delta = to - from;
+    if (pc.counts.w == 0u) {
+        vec3 extent = pc.maximum.xyz - pc.minimum.xyz;
+        for (int axis = 0; axis < 3; ++axis) {
+            // Strict comparisons preserve the CPU sign at exact half-period ties.
+            if (delta[axis] > 0.5 * extent[axis]) delta[axis] -= extent[axis];
+            else if (delta[axis] < -0.5 * extent[axis]) delta[axis] += extent[axis];
+        }
+    }
+    return delta;
+}
+uint mixBits(uint value) {
+    value ^= value >> 16u;
+    value *= 0x7FEB352Du;
+    value ^= value >> 15u;
+    value *= 0x846CA68Bu;
+    return value ^ (value >> 16u);
+}
+float unitRandom(uint value) { return float(mixBits(value) >> 8u) * (1.0 / 16777216.0); }
+vec3 initialDirection(uint value) {
+    vec3 direction = 2.0 * vec3(unitRandom(value), unitRandom(value + 1u), unitRandom(value + 2u)) - 1.0;
+    return dot(direction, direction) > 0.0 ? normalize(direction) : vec3(1, 0, 0);
+}
+vec3 limited(vec3 value, float minimumLength, float maximumLength, uint seed) {
+    float scale = max(max(abs(value.x), abs(value.y)), abs(value.z));
+    if (scale == 0.0) return initialDirection(seed) * minimumLength;
+    vec3 scaled = value / scale;
+    float scaledLength = length(scaled);
+    float magnitude = scale * scaledLength;
+    if (magnitude > maximumLength) return (scaled / scaledLength) * maximumLength;
+    if (magnitude < minimumLength) return (scaled / scaledLength) * minimumLength;
+    return value;
+}
+float below(float value) {
+    if (value == 0.0) return uintBitsToFloat(0x80000001u);
+    return uintBitsToFloat(value > 0.0 ? floatBitsToUint(value) - 1u : floatBitsToUint(value) + 1u);
+}
+void boundary(inout vec3 position, inout vec3 velocity) {
+    for (int axis = 0; axis < 3; ++axis) {
+        float low = pc.minimum[axis], high = pc.maximum[axis], extent = high - low;
+        if (pc.counts.w == 0u) {
+            if (position[axis] < low || position[axis] >= high) {
+                position[axis] = clamp(low + mod(position[axis] - low, extent), low, below(high));
+            }
+        } else {
+            if (position[axis] < low || position[axis] > high) {
+                float offset = mod(position[axis] - low, 2.0 * extent);
+                bool reflected = offset > extent;
+                position[axis] = clamp(low + (reflected ? 2.0 * extent - offset : offset), low, high);
+                if (reflected) velocity[axis] = -velocity[axis];
+            }
+            if (position[axis] == low) velocity[axis] = abs(velocity[axis]);
+            else if (position[axis] == high) velocity[axis] = -abs(velocity[axis]);
+        }
+    }
+}
+
+// Counting sort creates contiguous cell->agent ranges. Occupancy is unbounded
+// up to total agent count; there is no per-cell truncation or dropped neighbor.
+void scanBlock(uint index) {
+    uint lane = gl_LocalInvocationID.x;
+    uint count = index < pc.counts.y ? cellCounts[index] : 0u;
+    scanValues[lane] = count;
+    barrier();
+    for (uint offset = 1u; offset < 128u; offset *= 2u) {
+        uint addend = lane >= offset ? scanValues[lane - offset] : 0u;
+        barrier();
+        scanValues[lane] += addend;
+        barrier();
+    }
+    if (index < pc.counts.y) cellOffsets[index] = scanValues[lane] - count;
+    if (lane == 127u) blockSums[gl_WorkGroupID.x] = scanValues[lane];
+}
+
+void evolve(uint index) {
+    Agent self = previous[index];
+    vec3 sums[3] = vec3[3](vec3(0), vec3(0), vec3(0));
+    uint counts[3] = uint[3](0u, 0u, 0u);
+    float radiiSquared[3] = float[3](-1.0, -1.0, -1.0);
+    bool activeRules = false;
+    for (uint r = 0u; r < header.x; ++r) {
+        if (rules[r].weight > 0.0 && rules[r].radius > 0.0) {
+            radiiSquared[rules[r].kind] = rules[r].radius * rules[r].radius;
+            activeRules = true;
+        }
+    }
+    ivec3 center = cellOf(self.position);
+    if (activeRules) for (int dz = -1; dz <= 1; ++dz) {
+        int z = adjacent(center.z, dz, int(pc.dimensions.z));
+        if (z < 0) continue;
+        for (int dy = -1; dy <= 1; ++dy) {
+            int y = adjacent(center.y, dy, int(pc.dimensions.y));
+            if (y < 0) continue;
+            for (int dx = -1; dx <= 1; ++dx) {
+                int x = adjacent(center.x, dx, int(pc.dimensions.x));
+                if (x < 0) continue;
+                uint cell = cellIndex(ivec3(x, y, z));
+                uint end = cellOffsets[cell] + cellCounts[cell];
+                for (uint slot = cellOffsets[cell]; slot < end; ++slot) {
+                    uint otherIndex = groupedIndices[slot];
+                    if (otherIndex == index) continue; // IDs are metadata, not indices.
+                    Agent other = previous[otherIndex];
+                    vec3 delta = displacement(self.position, other.position);
+                    float distanceSquared = dot(delta, delta);
+                    if (distanceSquared <= radiiSquared[0] && any(notEqual(delta, vec3(0)))) {
+                        sums[0] -= delta / max(distanceSquared, 1.0e-6);
+                        ++counts[0];
+                    }
+                    if (distanceSquared <= radiiSquared[1]) { sums[1] += other.velocity; ++counts[1]; }
+                    if (distanceSquared <= radiiSquared[2]) { sums[2] += delta; ++counts[2]; }
+                }
+            }
+        }
+    }
+    vec3 steering[3];
+    for (uint kind = 0u; kind < 3u; ++kind) {
+        steering[kind] = counts[kind] > 0u ? sums[kind] / float(counts[kind]) : vec3(0);
+    }
+    if (counts[1] > 0u) steering[1] -= self.velocity;
+    vec3 acceleration = vec3(0);
+    // Preserve the scenario's rule order, including custom parameter changes.
+    for (uint r = 0u; r < header.x; ++r) acceleration += steering[rules[r].kind] * rules[r].weight;
+    acceleration = limited(acceleration, 0.0, pc.dynamics.w, 0u);
+    self.velocity = limited(self.velocity + acceleration * pc.dynamics.x,
+        pc.dynamics.y, pc.dynamics.z, pc.miscellaneous.x ^ self.id);
+    self.position += self.velocity * pc.dynamics.x;
+    boundary(self.position, self.velocity);
+    next[index] = self;
+}
+
+uint density(uint index, Agent self) {
+    if (pc.colorParameters.x == 0.0) return 0u;
+    uint count = 0u;
+    float radiusSquared = pc.colorParameters.x * pc.colorParameters.x;
+    ivec3 center = cellOf(self.position);
+    for (int dz = -1; dz <= 1; ++dz) {
+        int z = adjacent(center.z, dz, int(pc.dimensions.z));
+        if (z < 0) continue;
+        for (int dy = -1; dy <= 1; ++dy) {
+            int y = adjacent(center.y, dy, int(pc.dimensions.y));
+            if (y < 0) continue;
+            for (int dx = -1; dx <= 1; ++dx) {
+                int x = adjacent(center.x, dx, int(pc.dimensions.x));
+                if (x < 0) continue;
+                uint cell = cellIndex(ivec3(x, y, z));
+                uint end = cellOffsets[cell] + cellCounts[cell];
+                for (uint slot = cellOffsets[cell]; slot < end; ++slot) {
+                    uint other = groupedIndices[slot];
+                    if (other == index) continue;
+                    vec3 delta = displacement(self.position, previous[other].position);
+                    if (dot(delta, delta) <= radiusSquared) ++count;
+                }
+            }
+        }
+    }
+    return count;
+}
+vec3 intensityColor(float value) {
+    return mix(vec3(0.10, 0.35, 0.95), vec3(1.0, 0.25, 0.05), clamp(value, 0.0, 1.0));
+}
+void colorize(uint index) {
+    Agent agent = previous[index];
+    uint mode = pc.miscellaneous.y;
+    float speed = length(agent.velocity);
+    if (mode == 0u) agent.color = speed > 0.0 ? agent.velocity / speed * 0.5 + 0.5 : vec3(0.5);
+    else if (mode == 1u) agent.color = intensityColor(pc.dynamics.z > 0.0 ? speed / pc.dynamics.z : 0.0);
+    else if (mode == 2u) agent.color = intensityColor(float(density(index, agent)) / pc.colorParameters.y);
+    else agent.color = vec3(0.20, 0.75, 1.0);
+    display[index] = agent;
+}
+
+void main() {
+    uint index = gl_GlobalInvocationID.x;
+    uint stage = pc.counts.z;
+    if (stage == 0u) {
+        if (index < pc.counts.y) cellCounts[index] = 0u;
+    } else if (stage == 1u) {
+        if (index < pc.counts.x) atomicAdd(cellCounts[cellIndex(cellOf(previous[index].position))], 1u);
+    } else if (stage == 2u) {
+        scanBlock(index);
+    } else if (stage == 3u) {
+        if (index == 0u) {
+            uint prefix = 0u;
+            for (uint block = 0u; block < pc.dimensions.w; ++block) {
+                uint count = blockSums[block];
+                blockSums[block] = prefix;
+                prefix += count;
+            }
+        }
+    } else if (stage == 4u) {
+        if (index < pc.counts.y) {
+            cellOffsets[index] += blockSums[index / 128u];
+            cellCursors[index] = cellOffsets[index];
+        }
+    } else if (stage == 5u) {
+        if (index < pc.counts.x) {
+            uint cell = cellIndex(cellOf(previous[index].position));
+            groupedIndices[atomicAdd(cellCursors[cell], 1u)] = index;
+        }
+    } else if (stage == 6u) {
+        if (index < pc.counts.x) evolve(index);
+    } else if (stage == 7u) {
+        if (index < pc.counts.x) colorize(index);
+    }
+}

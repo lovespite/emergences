@@ -111,8 +111,9 @@ QueueFamilies findQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR surface) {
         VkBool32 supportsPresent = VK_FALSE;
         check(vkGetPhysicalDeviceSurfaceSupportKHR(device, i, surface, &supportsPresent),
               "Querying queue presentation support");
-        const bool supportsGraphics = (properties[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0;
-        // Prefer one family for both roles to simplify the first swapchain.
+        constexpr VkQueueFlags required = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT;
+        const bool supportsGraphics = (properties[i].queueFlags & required) == required;
+        // Rendering and compute share a queue so barriers also synchronize their submissions.
         if (supportsGraphics && supportsPresent == VK_TRUE) {
             return {i, i};
         }
@@ -264,7 +265,7 @@ void Context::selectPhysicalDevice() {
         }
     }
     if (physicalDevice_ == VK_NULL_HANDLE) {
-        throw std::runtime_error("No Vulkan device supports graphics, window presentation, and VK_KHR_swapchain");
+        throw std::runtime_error("No Vulkan device supports a graphics/compute queue, window presentation, and VK_KHR_swapchain");
     }
 }
 

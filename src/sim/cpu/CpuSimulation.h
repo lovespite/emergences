@@ -9,11 +9,7 @@
 
 namespace emergences::sim::cpu {
 
-struct MotionLimits {
-    float minimumSpeed{1.0F};
-    float maximumSpeed{8.0F};
-    float maximumAcceleration{20.0F};
-};
+using MotionLimits = sim::MotionLimits;
 
 // All rules read the same old state. Weighted accelerations are summed, limited,
 // then integrated with semi-implicit Euler. Interventions run in insertion order
@@ -44,6 +40,7 @@ public:
     // Imported records and intervention results must be finite with size >= 0.
     // Positions and speeds are normalized to the configured world and limits.
     void setAgents(std::span<const Agent> agents);
+    [[nodiscard]] std::vector<Agent> readback() override { return agents_; }
 
     // Configuration and rule changes are only allowed between steps. A kernel
     // is optional; nullptr or prepare(false) keeps arbitrary rules serial.

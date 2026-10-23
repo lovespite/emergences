@@ -1,12 +1,12 @@
 add_library(emergences_core STATIC
     Window.cpp Context.cpp Swapchain.cpp Pipeline.cpp FrameRenderer.cpp TriangleRenderer.cpp
-    Buffer.cpp Descriptor.cpp Camera.cpp ParticleRenderer.cpp LineRenderer.cpp ImGuiLayer.cpp)
+    Buffer.cpp Descriptor.cpp ComputeDevice.cpp Camera.cpp ParticleRenderer.cpp LineRenderer.cpp ImGuiLayer.cpp)
 add_library(emergences::core ALIAS emergences_core)
 target_include_directories(emergences_core PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_compile_definitions(emergences_core PRIVATE
     GLFW_INCLUDE_NONE
     $<$<CONFIG:Debug>:EMERGENCES_ENABLE_VALIDATION=1>)
-target_link_libraries(emergences_core PUBLIC Vulkan::Vulkan glm::glm PRIVATE glfw emergences::imgui)
+target_link_libraries(emergences_core PUBLIC Vulkan::Vulkan glm::glm emergences::sim PRIVATE glfw emergences::imgui)
 emergences_target_defaults(emergences_core)
 
 if(BUILD_TESTING)

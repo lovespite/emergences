@@ -1,9 +1,11 @@
 #include "scenarios/boids/BoidsApp.h"
 #include "scenarios/boids/BoidsScene.h"
+#include "scenarios/boids/BoidsGpu.h"
 #include "scenarios/boids/CursorAttract.h"
 #include "scenarios/boids/CursorRepel.h"
 #include "core/Camera.h"
 #include "core/Context.h"
+#include "core/ComputeDevice.h"
 #include "core/FrameRenderer.h"
 #include "core/ImGuiLayer.h"
 #include "core/LineRenderer.h"
@@ -34,7 +36,7 @@ struct Controls {
     float size = 0.45F;
     bool grid = true;
     bool bounds = true;
-    bool antialiasing = false;
+    bool antialiasing = true;
     bool cursor = false;
     int cursorMode = 0;
     float radius = 8.0F;
@@ -43,6 +45,8 @@ struct Controls {
     float simulationMs = 0.0F;
     std::size_t simulationSteps = 0;
     bool simulationLimited = false;
+    double simulationWarningUntil = 0.0;
+    std::string backendError;
 };
 
 struct Actions {
@@ -63,22 +67,33 @@ bool slider(const char* label, float& value, float minimum, float maximum) {
 Actions drawPanel(BoidsScene& scene, Controls& controls, core::Camera& camera,
                   const core::Context& context, const core::FrameRenderer& renderer) {
     Actions actions;
-    auto& simulation = scene.simulation();
     ImGui::SetNextWindowPos(ImVec2(18, 18), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(350, std::max(180.0F,
         std::min(690.0F, ImGui::GetIO().DisplaySize.y - 36.0F))), ImGuiCond_Always);
     ImGui::Begin("Emergences | Boids", nullptr, ImGuiWindowFlags_NoResize);
-    ImGui::TextColored(ImVec4(0.3F, 0.8F, 0.95F, 1.0F), "PHASE 3 / LIVE BOIDS");
-    if (ImGui::BeginCombo("Backend", "CPU")) {
-        ImGui::Selectable("CPU", true);
-        ImGui::BeginDisabled();
-        ImGui::Selectable("GPU compute (Phase 4)", false);
-        ImGui::EndDisabled();
+    ImGui::TextColored(ImVec4(0.3F, 0.8F, 0.95F, 1.0F), "PHASE 4 / LIVE BOIDS");
+    if (ImGui::BeginCombo("Backend", scene.backend() == sim::Backend::CPU ? "CPU" : "GPU compute")) {
+        for (const auto backend : {sim::Backend::CPU, sim::Backend::GPU}) {
+            ImGui::BeginDisabled(backend == sim::Backend::GPU && scene.gpuSimulation() == nullptr);
+            if (ImGui::Selectable(backend == sim::Backend::CPU ? "CPU" : "GPU compute",
+                                  scene.backend() == backend)) {
+                try {
+                    scene.setBackend(backend);
+                    controls.backendError.clear();
+                    actions.skipElapsed = true;
+                } catch (const std::exception& error) {
+                    controls.backendError = error.what();
+                }
+            }
+            ImGui::EndDisabled();
+        }
         ImGui::EndCombo();
     }
+    if (!controls.backendError.empty()) ImGui::TextWrapped("%s", controls.backendError.c_str());
+    auto& simulation = scene.currentSimulation();
     int count = static_cast<int>(simulation.count());
-    if (ImGui::SliderInt("Agents", &count, 0, 20000, "%d", ImGuiSliderFlags_AlwaysClamp)) {
-        simulation.setCount(static_cast<std::size_t>(std::clamp(count, 0, 20000)));
+    if (ImGui::SliderInt("Agents", &count, 0, 100000, "%d", ImGuiSliderFlags_AlwaysClamp)) {
+        simulation.setCount(static_cast<std::size_t>(std::clamp(count, 0, 100000)));
     }
     bool paused = scene.paused();
     if (ImGui::Checkbox("Paused", &paused)) {
@@ -132,6 +147,7 @@ Actions drawPanel(BoidsScene& scene, Controls& controls, core::Camera& camera,
                 simulation.setWorld(world);
             }
             ImGui::Separator();
+            ImGui::BeginDisabled(scene.backend() == sim::Backend::GPU);
             ImGui::Checkbox("Cursor force", &controls.cursor);
             ImGui::BeginDisabled(!controls.cursor);
             ImGui::RadioButton("Repel", &controls.cursorMode, 0);
@@ -142,6 +158,8 @@ Actions drawPanel(BoidsScene& scene, Controls& controls, core::Camera& camera,
             slider("Plane height", controls.planeHeight,
                    simulation.world().minimum.y + 1.0F, simulation.world().maximum.y - 1.0F);
             ImGui::EndDisabled();
+            ImGui::EndDisabled();
+            if (scene.backend() == sim::Backend::GPU) ImGui::TextDisabled("Cursor force is available on CPU.");
             ImGui::TextWrapped("Hover over the world to apply the force. The rings show its 3D radius on the selected height plane.");
             ImGui::TextDisabled("Force pauses over UI and during camera input.");
             ImGui::EndTabItem();
@@ -171,8 +189,21 @@ Actions drawPanel(BoidsScene& scene, Controls& controls, core::Camera& camera,
     ImGui::TextDisabled("Wheel: zoom | Escape: close");
     ImGui::Text("%.1f FPS | simulation %.2f ms (%zu steps)", static_cast<double>(ImGui::GetIO().Framerate),
                 static_cast<double>(controls.simulationMs), controls.simulationSteps);
-    if (controls.simulationLimited) {
-        ImGui::TextColored(ImVec4(1.0F, 0.75F, 0.35F, 1.0F), "Simulation slowed to keep controls responsive.");
+    if (actions.reset || actions.skipElapsed || scene.paused()) {
+        controls.simulationWarningUntil = 0.0;
+    } else if (controls.simulationLimited) {
+        // Sample the completed frame here, so even a step taking over a second
+        // keeps the warning visible. Hide only after a full second of recovery.
+        controls.simulationWarningUntil = ImGui::GetTime() + 1.0;
+    }
+    // Keep the footer geometry identical with and without a warning. Removing
+    // this item each fast frame moves the footer and can toggle the scrollbar,
+    // changing the width and wrapping of the entire control panel.
+    constexpr const char* simulationWarning = "Simulation slowed to keep\ncontrols responsive.";
+    if (ImGui::GetTime() < controls.simulationWarningUntil) {
+        ImGui::TextColored(ImVec4(1.0F, 0.75F, 0.35F, 1.0F), "%s", simulationWarning);
+    } else {
+        ImGui::Dummy(ImGui::CalcTextSize(simulationWarning));
     }
     ImGui::TextWrapped("%s", context.deviceName().c_str());
     ImGui::TextDisabled("Validation: %s", context.validationEnabled() ? "on" : "off");
@@ -298,15 +329,63 @@ void smokeSettings(std::size_t frame, BoidsScene& scene, Controls& controls,
     if (frame == 12) camera.pan(20.0F, 10.0F, 540.0F);
 }
 
+void checkedSwitch(BoidsScene& scene, sim::Backend backend) {
+    const auto before = scene.currentSimulation().readback();
+    const auto steps = scene.totalSteps();
+    const bool paused = scene.paused();
+    scene.setBackend(backend);
+    const auto after = scene.currentSimulation().readback();
+    require(before.size() == after.size(), "Backend switch changed agent count");
+    require(scene.totalSteps() == steps && scene.paused() == paused, "Backend switch changed clock or pause");
+    for (std::size_t i = 0; i < before.size(); ++i) {
+        require(before[i].id == after[i].id && before[i].color == after[i].color &&
+                before[i].size == after[i].size &&
+                glm::length(before[i].position - after[i].position) < 1.0e-5F &&
+                glm::length(before[i].velocity - after[i].velocity) < 1.0e-5F,
+                "Backend switch lost simulation state");
+    }
+}
+
+void gpuSmokeSettings(std::size_t frame, BoidsScene& scene, Controls& controls, Actions& actions) {
+    if (frame == 0) { checkedSwitch(scene, sim::Backend::GPU); scene.currentSimulation().setCount(0); }
+    if (frame == 2) scene.currentSimulation().setCount(1);
+    if (frame == 4) scene.currentSimulation().setCount(257);
+    if (frame == 6 || frame == 30) checkedSwitch(scene, sim::Backend::CPU);
+    if (frame == 7 || frame == 32) checkedSwitch(scene, sim::Backend::GPU);
+    if (frame == 8) scene.currentSimulation().setCount(100000);
+    if (frame == 10) scene.currentSimulation().setCount(96);
+    if (frame == 12) scene.currentSimulation().setCount(512);
+    if (frame == 14) scene.setPaused(true);
+    if (frame == 17) actions.step = true;
+    if (frame == 18) actions.reset = true;
+    if (frame == 19) scene.setPaused(false);
+    if (frame == 20) {
+        scene.currentSimulation().rules()[0]->setWeight(0.0F);
+        scene.currentSimulation().rules()[1]->setRadius(9.0F);
+    }
+    if (frame == 22 || frame == 34) {
+        auto world = scene.currentSimulation().world();
+        world.boundary = frame == 22 ? sim::BoundaryMode::Bounce : sim::BoundaryMode::Wrap;
+        scene.currentSimulation().setWorld(world);
+        scene.currentSimulation().setMotionLimits({2.0F, 6.0F, 12.0F});
+    }
+    if (frame == 28) scene.currentSimulation().setCount(0);
+    if (frame == 31) scene.currentSimulation().setCount(2048);
+    controls.cursor = frame >= 24 && frame < 28;
+    controls.color = static_cast<int>((frame / 4) % 4);
+    controls.shape = static_cast<int>((frame / 8) % 2);
+}
+
 } // namespace
 
-int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest) {
-    core::Window window{1280, 800, "Emergences | CPU Boids"};
+int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, bool gpuSmokeTest) {
+    const bool anySmokeTest = smokeTest || gpuSmokeTest;
+    core::Window window{1280, 800, "Emergences | Boids"};
     core::Context context{window};
     std::cout << "Vulkan initialized on: " << context.deviceName() << '\n';
     std::cout << "Validation layer: " << (context.validationEnabled() ? "enabled" : "disabled") << '\n';
 #if !defined(NDEBUG)
-    if (smokeTest && !context.validationEnabled()) {
+    if (anySmokeTest && !context.validationEnabled()) {
         throw std::runtime_error("Debug smoke test requires VK_LAYER_KHRONOS_validation");
     }
 #endif
@@ -315,7 +394,9 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest) 
     bool observedMotion = false;
     bool observedRepel = false;
     bool observedAttract = false;
+    bool observedGpuMotion = false;
     {
+        core::VulkanComputeDevice compute{context};
         core::ParticleRenderer particles{context, shaderDirectory};
         core::LineRenderer lines{context, shaderDirectory};
         core::ImGuiLayer ui{context, window};
@@ -324,6 +405,16 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest) 
         core::Camera camera;
         BoidsScene scene;
         Controls controls;
+        try {
+            scene.initializeGpu(compute, (shaderDirectory / "compute/boids.comp.spv").string());
+            // CPU-specific regression fixtures keep their original path. Normal
+            // interactive launches start on GPU and retain CPU as a fallback.
+            if (!smokeTest) scene.setBackend(sim::Backend::GPU);
+        } catch (const std::exception& error) {
+            if (gpuSmokeTest) throw;
+            controls.backendError = std::string{"GPU compute unavailable: "} + error.what();
+        }
+        if (gpuSmokeTest) require(scene.backend() == sim::Backend::GPU, "GPU must be the default backend");
         auto repelOwner = std::make_unique<CursorRepel>();
         auto attractOwner = std::make_unique<CursorAttract>();
         auto& repel = *repelOwner;
@@ -339,8 +430,8 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest) 
             const auto now = std::chrono::steady_clock::now();
             const double elapsed = std::chrono::duration<double>(now - previous).count();
             previous = now;
-            if (smokeTest && now >= deadline) throw std::runtime_error("Boids smoke test timed out");
-            if (smokeTest) controls.antialiasing = (presentedFrames >= 2 && presentedFrames < 16) || presentedFrames >= 20;
+            if (anySmokeTest && now >= deadline) throw std::runtime_error("Boids smoke test timed out");
+            if (anySmokeTest) controls.antialiasing = (presentedFrames >= 2 && presentedFrames < 16) || presentedFrames >= 20;
             renderer.setAntialiasing(controls.antialiasing);
             const bool presented = renderer.drawFrame(
                 [&](VkRenderPass pass, std::uint32_t imageCount) {
@@ -350,13 +441,14 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest) 
                 },
                 [&](VkCommandBuffer commands, VkExtent2D extent, std::size_t frame) {
                     ui.beginFrame();
-                    if (smokeTest) {
+                    if (anySmokeTest) {
                         require(renderer.sampleCount() == (controls.antialiasing
                             ? renderer.supportedAntialiasingSampleCount() : VK_SAMPLE_COUNT_1_BIT),
                             "Boids MSAA toggle did not select the expected sample count");
                     }
                     Actions actions;
                     if (smokeTest) smokeSettings(presentedFrames, scene, controls, camera, actions);
+                    if (gpuSmokeTest) gpuSmokeSettings(presentedFrames, scene, controls, actions);
                     const auto panelActions = drawPanel(scene, controls, camera, context, renderer);
                     actions.reset |= panelActions.reset;
                     actions.step |= panelActions.step;
@@ -364,7 +456,7 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest) 
                     const auto& io = ImGui::GetIO();
                     const bool cameraInput = ImGui::IsMouseDown(ImGuiMouseButton_Left) ||
                         ImGui::IsMouseDown(ImGuiMouseButton_Middle) || ui.wheelDelta() != 0.0F;
-                    if (!ui.wantsMouse() && !smokeTest) {
+                    if (!ui.wantsMouse() && !anySmokeTest) {
                         if (ImGui::IsMouseDragging(ImGuiMouseButton_Left)) camera.orbit(io.MouseDelta.x, io.MouseDelta.y);
                         if (ImGui::IsMouseDragging(ImGuiMouseButton_Middle)) camera.pan(io.MouseDelta.x, io.MouseDelta.y, io.DisplaySize.y);
                         camera.zoom(ui.wheelDelta());
@@ -373,13 +465,13 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest) 
                     const bool inputAllowed = !ui.wantsMouse() && !cameraInput &&
                         ImGui::IsMousePosValid() && glfwGetWindowAttrib(window.nativeHandle(), GLFW_HOVERED) &&
                         glfwGetWindowAttrib(window.nativeHandle(), GLFW_FOCUSED);
-                    const auto target = cursorTarget(camera, scene.simulation().world(), controls,
+                    const auto target = cursorTarget(camera, scene.currentSimulation().world(), controls,
                         smokeTest ? 0.5F : io.MousePos.x / io.DisplaySize.x,
                         smokeTest ? 0.5F : io.MousePos.y / io.DisplaySize.y, aspect,
-                        smokeTest ? presentedFrames != 26 : inputAllowed);
+                        scene.backend() == sim::Backend::CPU && (smokeTest ? presentedFrames != 26 : inputAllowed));
                     updateForces(repel, attract, controls, target);
                     const auto stepsBefore = scene.totalSteps();
-                    const auto oldAgents = scene.simulation().agents();
+                    const auto oldAgents = scene.currentSimulation().agents();
                     const glm::vec3 firstPosition = oldAgents.empty() ? glm::vec3{0.0F} : oldAgents.front().position;
                     // For each force mode, compare the actual scene trajectory
                     // to identical rules/state without interventions. This checks
@@ -410,16 +502,34 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest) 
                             // into eight slow steps before the next UI frame.
                             // Zero budget in the last smoke frames reliably
                             // exercises overload without machine-speed asserts.
-                            const double workBudget = smokeTest
+                            const double workBudget = anySmokeTest
                                 ? (presentedFrames >= 40 ? 0.0 : std::numeric_limits<double>::infinity())
                                 : 0.008;
-                            controls.simulationSteps += scene.advance(smokeTest ? 1.0 / 60.0 : elapsed, workBudget);
+                            controls.simulationSteps += scene.advance(anySmokeTest ? 1.0 / 60.0 : elapsed, workBudget);
                             controls.simulationLimited = scene.lastAdvanceLimited();
                         }
                     }
                     controls.simulationMs = std::chrono::duration<float, std::milli>(
                         std::chrono::steady_clock::now() - simulationStart).count();
                     const auto agents = scene.refreshColors(static_cast<ColorMode>(controls.color));
+                    if (gpuSmokeTest) {
+                        if (scene.backend() == sim::Backend::GPU) {
+                            require(agents.empty() && scene.currentSimulation().agents().empty(),
+                                    "GPU rendering must not implicitly read back agents");
+                            require(!repel.enabled() && !attract.enabled(), "GPU cursor force was enabled");
+                        }
+                        if (scene.paused() && !actions.step && !actions.reset)
+                            require(scene.totalSteps() == stepsBefore, "Paused GPU advanced");
+                        if (actions.step) require(scene.totalSteps() == stepsBefore + 1, "GPU single step failed");
+                        if (actions.reset) require(scene.totalSteps() == 0, "GPU reset clock failed");
+                        if (presentedFrames == 5) {
+                            const auto state = scene.currentSimulation().readback();
+                            require(state.size() == 257, "GPU smoke count mismatch");
+                            sim::cpu::CpuSimulation initial{257, scene.currentSimulation().world()};
+                            observedGpuMotion = state.front().position != initial.agents().front().position;
+                            require(observedGpuMotion, "GPU state did not advance");
+                        }
+                    }
                     renderParticles.resize(agents.size());
                     for (std::size_t i = 0; i < agents.size(); ++i) {
                         const auto& agent = agents[i];
@@ -459,7 +569,13 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest) 
                     if (target) drawCursor(*target, controls, view.viewProjection);
                     ui.endFrame();
                     lines.draw(commands, view, controls.grid, controls.bounds);
-                    particles.draw(commands, frame, renderParticles, view);
+                    if (scene.backend() == sim::Backend::GPU) {
+                        const auto buffer = scene.gpuSimulation()->renderBuffer();
+                        particles.drawBuffer(commands, frame, compute.buffer(buffer), compute.bufferSize(buffer),
+                            static_cast<std::uint32_t>(scene.currentSimulation().count()), view);
+                    } else {
+                        particles.draw(commands, frame, renderParticles, view);
+                    }
                     ui.record(commands);
                 });
             if (!presented) {
@@ -468,7 +584,7 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest) 
                 continue;
             }
             ++presentedFrames;
-            if (smokeTest) {
+            if (anySmokeTest) {
                 if (presentedFrames == 4) window.resize(960, 640);
                 else if (presentedFrames == 8) window.resize(1280, 800);
                 else if (presentedFrames >= 48 && renderer.swapchainGeneration() >= 3) break;
@@ -487,6 +603,13 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest) 
         std::cout << "Boids smoke test passed: " << presentedFrames << " presented frames, "
                   << generations << " swapchain generations, counts 0/1/257/4096/96/512/2048, "
                      "fixed steps/pause/reset/rules/limits/boundaries/colors/cursor/dense budget/MSAA toggles, 0 validation errors.\n";
+    }
+    if (gpuSmokeTest) {
+        require(presentedFrames >= 48 && generations >= 3 && observedGpuMotion,
+                "GPU Boids smoke test closed before all checks completed");
+        std::cout << "GPU Boids smoke test passed: " << presentedFrames << " frames, " << generations
+                  << " swapchain generations, CPU/GPU switches, 0/1/257/100000 agents, pause/step/reset, "
+                     "colors/boundaries/MSAA, zero-copy rendering, 0 validation errors.\n";
     }
     return 0;
 }

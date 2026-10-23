@@ -53,17 +53,42 @@ void ParticleRenderer::draw(VkCommandBuffer commands, std::size_t frame,
                                                    std::max<VkDeviceSize>(bytes * 2, 4096));
         buffer = std::make_unique<Buffer>(context_, capacity, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        descriptor_->writeBuffer(static_cast<std::uint32_t>(frame), 0,
-            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, *buffer, capacity);
     }
     buffer->write(particles.data(), bytes);
-    vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_->handle());
+    drawBuffer(commands, frame, buffer->handle(), buffer->size(),
+               static_cast<std::uint32_t>(particles.size()), view);
+}
+
+void ParticleRenderer::drawBuffer(VkCommandBuffer commands, std::size_t frame,
+                                  VkBuffer buffer, VkDeviceSize bufferBytes,
+                                  std::uint32_t count, const SceneView& view) {
+    if (frame >= buffers_.size()) throw std::out_of_range("Particle frame slot is invalid");
+    if (count == 0) return;
+    if (!pipeline_) throw std::logic_error("Configure the particle renderer before drawing");
+    if (commands == VK_NULL_HANDLE || buffer == VK_NULL_HANDLE) {
+        throw std::invalid_argument("Drawing particles requires command and storage buffers");
+    }
+    const VkDeviceSize required = static_cast<VkDeviceSize>(count) * sizeof(Particle);
+    if (required > bufferBytes || bufferBytes > maxStorageRange_) {
+        throw std::length_error("Particle storage buffer range is invalid");
+    }
     const auto set = descriptor_->set(static_cast<std::uint32_t>(frame));
+    const VkDescriptorBufferInfo bufferInfo{buffer, 0, bufferBytes};
+    VkWriteDescriptorSet write{};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = set;
+    write.dstBinding = 0;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    write.pBufferInfo = &bufferInfo;
+    // Update even for an existing CPU allocation: this slot may have used a GPU
+    // simulation buffer on its previous frame.
+    vkUpdateDescriptorSets(context_.device(), 1, &write, 0, nullptr);
+    vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_->handle());
     vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_->layout(),
                             0, 1, &set, 0, nullptr);
     vkCmdPushConstants(commands, pipeline_->layout(), VK_SHADER_STAGE_VERTEX_BIT,
                         0, sizeof(view), &view);
-    vkCmdDraw(commands, 6,
-              static_cast<std::uint32_t>(particles.size()), 0, 0);
+    vkCmdDraw(commands, 6, count, 0, 0);
 }
 } // namespace emergences::core

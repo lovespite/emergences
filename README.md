@@ -2,7 +2,7 @@
 
 基于 C++20 和 Vulkan 的涌现模拟项目。项目按通用渲染层、通用模拟层和具体场景三层组织，首个场景采用 Boids 鸟群模型。完整方案见 [PLAN.md](PLAN.md)。
 
-**Phase 1–3 已完成。** 默认应用运行真实的 CPU Boids 模拟，连接 Vulkan 粒子渲染、实时参数面板和光标吸引 / 排斥干预；保留轨道相机、地面网格、世界边界、窗口缩放重建和最小化暂停绘制。模拟、场景状态和干预库均可独立于 Vulkan 构建和测试。GPU compute 留待 Phase 4。
+**Phase 1–4 已实现。** 默认应用运行 GPU compute Boids，可在面板切回 CPU 使用光标吸引 / 排斥。两种后端共用规则参数、固定步长和显示控制。GPU 使用均匀网格和计算着色器，显示结果直接绑定 Vulkan 粒子渲染；GPU 初始化失败时回退 CPU，并在面板显示原因。模拟与场景库仍可独立于 Vulkan 构建和测试。
 
 ## 构建前置
 
@@ -11,6 +11,35 @@
 - 构建应用时，需要完整的 LunarG Vulkan SDK，包括头文件、链接库和 `glslc`。显卡驱动附带的 Vulkan 运行时不足以编译项目。
 - 首次配置需要联网下载固定版本的 GLFW、GLM 和 Dear ImGui。依赖版本及缓存说明见 [third_party/README.md](third_party/README.md)。
 
+## 一键生成 Windows 可执行程序
+
+安装上述依赖，并在 Visual Studio 2022 / Build Tools 中安装“使用 C++ 的桌面开发”工作负载（含 Windows SDK）。将 CMake 加入 `PATH` 后，**双击项目根目录的 `build.bat`** 即可完成配置、编译和着色器生成，默认生成适合日常运行的 Release 版本：
+
+```text
+build-host-x64/Release/emergences.exe
+build-host-x64/Release/shaders/
+```
+
+构建结束后窗口会保留结果或错误信息；成功后可双击 `emergences.exe` 启动。脚本支持从任意工作目录调用，会尝试读取安装器保存的 `VULKAN_SDK` 环境变量，重复运行会增量构建。
+
+在 PowerShell 中可使用以下命令；`build.bat` 带参数时不会暂停，适合终端和自动化调用：
+
+```powershell
+.\build.bat -Configuration Release             # 一键构建 Release
+.\build.bat -Configuration Debug -Test         # 构建全部目标并运行无 GPU 测试
+.\build.bat -Run                               # 构建 Release，成功后启动程序
+.\build.bat -Jobs 4                            # 限制并行构建任务数（默认最多 8 个）
+
+# 也可直接使用 PowerShell 脚本；支持 Windows PowerShell 5.1 和 PowerShell 7。
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -Configuration Release
+```
+
+默认只构建应用及其依赖；`-Test` 构建全部目标并运行 CPU / 相机测试，即使已有缓存启用了 GPU 测试，也会跳过带 `gpu` 标签的测试。Debug 产物位于 `build-host-x64/Debug/`。构建或测试失败会立即停止并返回非零退出码；`-Run` 仅在前面步骤成功后启动程序，并等待程序退出。
+
+这些脚本复用下面的 `vs2022`、`release` / `debug` CMake 预设，生成可执行文件和配套资源，不制作安装包。对外复制请使用 Release，并保留完整的 `shaders/` 目录；其他 Windows 电脑还需支持 Vulkan 的显卡驱动及 x64 Visual C++ 运行库（含 OpenMP 运行库）。
+
+## 本机验收记录
+
 Phase 1 的历史验收记录（2026-10-22）：本机 SDK `1.4.363.0`（`D:\VulkanSDK\1.4.363.0`）的头文件、链接库、`glslc` 和 `VK_LAYER_KHRONOS_validation` 均可用。应用在 NVIDIA GeForce RTX 4060 Laptop GPU 上通过 Debug、Release 完整构建，当时两种配置的 CTest 均为 **3/3 通过**：`camera_math`、`vulkan_triangle`、`vulkan_particles`。Debug 额外启用 `VK_LAYER_VALIDATE_SYNC=1` 后无校验诊断。模拟公共头文件独立编译和 `Agent` 布局检查也已通过。该记录不包含 Phase 2 新增的四项 CPU 测试。
 
 Phase 2 验收记录（2026-10-22）：Debug / Release 全工程构建成功，两种配置的完整 CTest 均为 **7/7 通过**，包含 `sim_world_grid`、`sim_cpu`、`boids_rules`、`boids_simulation`、`camera_math`、`vulkan_triangle`、`vulkan_particles`。Debug 额外开启 `VK_LAYER_VALIDATE_SYNC=1` 后无校验诊断。独立 CPU 路径设置 `EMERGENCES_BUILD_APP=OFF`，在新目录 `build/sim-phase2` 完成 Debug / Release 构建，两种配置的 CPU 测试均为 **4/4 通过**；使用新目录是为了保留旧宿主工具集的 `build/sim-only` 缓存。
@@ -18,6 +47,10 @@ Phase 2 验收记录（2026-10-22）：Debug / Release 全工程构建成功，�
 Phase 3 验收记录（2026-10-22）：Debug / Release 完整构建成功，完整 CTest 各 **10/10 通过**；Debug 开启 `VK_LAYER_VALIDATE_SYNC=1` 后无校验诊断。独立 CPU 路径在 `build/sim-phase3` 设置 `EMERGENCES_BUILD_APP=OFF`，Debug / Release 构建及测试各 **6/6 通过**。新增检查覆盖固定步长、暂停 / 单步 / 重置、着色、光标力和屏幕射线拾取；真实场景冒烟还对照未施力轨迹，验证两种干预实际改变运动。SDK 截图确认面板、密度色、圆点、吸引 / 排斥范围及真实鸟群聚集；截图与日志位于 `build-host-x64/verification-phase3/`。这些检查不包含逐项鼠标点击验收或正式性能基准。
 
 CPU 融合与并行验收记录（2026-10-23）：Debug / Release 完整构建和 CTest 各 **12/12 通过**，Debug 开启 `VK_LAYER_VALIDATE_SYNC=1` 后无校验诊断；关闭 OpenMP 的独立 CPU Release 构建 **8/8 通过**。六组固定快照在融合串行和默认自动并行下，单步及连续 32 步输出均与优化前逐字节一致。当前默认参数、本机 i9-13980HX、匹配正式应用编译选项的 Release 对照中，2048 个体演化 20 秒状态的单步约 **11.30→2.32 ms**，2048 极密集状态约 **83.12→10.82 ms**，8192 分团状态约 **107.93→20.48 ms**。数值为两轮中位数的汇总，每轮预热 2 次后测 11 次；恢复快照不计时，数据是热缓存单步耗时，不包含着色和呈现，不能直接换算为帧率。完整结果包含各轮波动，位于 `build/cpu-parallel-verification/production-summary.csv`；其余日志、固定快照对照程序和旧版源码也保存在该目录。默认应用已启用融合和自动线程策略，空间网格与显示颜色计算未在此次改动中优化。
+
+Phase 4 验收记录（2026-10-23）：Debug / Release 完整构建及 CTest 各 **15/15 通过**；Debug 启用 `VK_LAYER_VALIDATE_SYNC=1`，无校验诊断。最终默认 GPU 启动与计算调整后，Debug 的后端契约、GPU 场景、GPU 计算三项复测也全部通过。独立无 Vulkan、关闭 OpenMP 的 `build/phase4-scene-tests` 在 Debug / Release 各 **9/9 通过**。CPU/GPU 对照覆盖两种边界、周期接缝、重合点、零半径 / 零权重、513 个体拥挤单格和完整 32³ 网格；本轮最大位置误差小于 `8e-6`，速度误差小于 `4e-6`。10 万个体状态、速度限制与 ID 完整性通过，SDK 截图确认 GPU 面板、密度色圆点和箭头绘制。测试日志和截图在 `build-host-x64/verification-phase4/`，未进行逐项鼠标点击验收。
+
+10 万个体在本机 RTX 4060 Laptop GPU 的 Release 冒烟采样约 **37.12 ms/步**：默认规则、均匀初始分布，预热 1 步后连续 3 步取平均，计入提交及 fence 等待，不含着色和呈现。这只是短时运行检查，运行间波动明显，不是正式性能基准或帧率承诺。
 
 SDK 截图层已验证箭头、圆点和缩放后的实际画面，本机产物位于 `build-host-x64/verification-phase1/`。冒烟测试通过程序设置切换模式和相机，并绘制面板；这些检查不包含鼠标逐项点击面板的 UI 自动化。
 
@@ -41,19 +74,19 @@ cmake --build --preset debug
 
 默认在 `[-40,40]` 的三维世界中运行 2048 个真实 Boids。面板提供以下操作：
 
-- 数量 0–20000、暂停、暂停时单步、重置；Backend 当前为 CPU，GPU compute 选项灰显。
+- 数量 0–100000、暂停、暂停时单步、重置；Backend 可切换 CPU / GPU compute。切换保留个体位置、速度、ID、规则、世界、速度限制、暂停状态与模拟时钟。
 - **Behavior**：三条规则各自的权重 / 半径、最小 / 最大速度、最大加速度及 Wrap / Bounce 边界。权重设为 0 可关闭对应规则。
-- **Behavior → Cursor force**：选择 Repel / Attract，设置作用半径、强度及 XZ 交互平面的高度。启用后，光标悬停在世界中的有效投影点即可施力；三个圆环显示球形作用范围。鼠标位于 UI、操作相机、离开窗口或窗口失焦时暂停施力。
+- **Behavior → Cursor force**：CPU 后端可选择 Repel / Attract，设置作用半径、强度及 XZ 交互平面的高度。启用后，光标悬停在世界中的有效投影点即可施力；三个圆环显示球形作用范围。鼠标位于 UI、操作相机、离开窗口或窗口失焦时暂停施力。GPU 后端禁用光标力，切回 CPU 后保留控件设置。
 - **View**：抗锯齿开关、箭头 / 圆点、大小、Direction / Speed / Density / Solid 四种颜色、地面网格与世界边界开关、相机重置。密度色使用半径 5 内的邻居数，0 为蓝色、32 及以上为橙红色，周期边界两侧邻居也计入。
 - 左键拖动旋转、中键拖动平移、滚轮缩放；ImGui 捕获鼠标时，相机不响应相同输入。
 
-**Anti-aliasing (MSAA)** 默认关闭，可在 View 面板或程序化预览面板随时切换。启用时优先使用 4× MSAA，不支持时使用 2×；若当前设备与附件格式都不支持多采样，开关灰显并继续使用单采样。箭头通过多采样平滑几何边缘，圆点通过 alpha-to-coverage 平滑圆周。切换会重建交换链附件及相关管线，保留模拟和相机状态。
+**Anti-aliasing (MSAA)** 默认开启，可在 View 面板或程序化预览面板随时切换。启用时优先使用 4× MSAA，不支持时使用 2×；若当前设备与附件格式都不支持多采样，开关灰显并继续使用单采样。箭头通过多采样平滑几何边缘，圆点通过 alpha-to-coverage 平滑圆周。切换会重建交换链附件及相关管线，保留模拟和相机状态。
 
 场景以固定 `1/120` 秒推进。交互应用为每帧模拟设置 **8 ms 工作预算**，每完成一个完整步检查一次预算，单帧最多 8 步；超额时丢弃整步积压并保留不足一步的余量。单步不能中途打断，因此这不是硬性的 8 ms 帧耗时保证。高负载时模拟时间会放慢，面板显示减速提示、每帧耗时与步数，避免连续补算八个慢步拖垮界面。暂停不积累时间；重置保留当前数量、参数和暂停状态，同时清空模拟时钟并恢复确定性初始状态。
 
 2026-10-22 针对「运行一段时间降至约 1 FPS」的性能回归使用当时的默认规则参数（`weight / radius`：Alignment `1 / 5`、Cohesion `0.6 / 5`、Separation `1.5 / 2`）：2048 个体演化 20 秒后，平均邻居数由 16.5 增至 304。已让空间查询缓存最短位移、复用最大半径邻居列表，消除规则中的重复周期计算，并加入上述交互预算。对保存的同一 20 秒状态，本机 Release 配对测量单步由约 **80.6 ms 降至 15.2 ms**；交互推进由八步约 **624 ms** 降至预算下的一步约 **14 ms**。后者包含模拟时钟减速，不能解读为维持相同实时推进速度下的帧率提升。8 个快照的一步输出，以及该组参数下连续 2400 步的 5 / 10 / 15 / 20 秒状态均与旧版逐字节一致。以上是旧默认参数的历史测量，不代表当前默认参数的性能。基准程序、快照与日志在 `build/perf-diagnosis/`；数值受主机负载影响，不承诺所有密度或数量下的帧率。
 
-关闭窗口或按 Escape 即可退出。`--render-preview` 可打开原有程序化粒子预览。命令行提供三个独立的呈现测试：
+关闭窗口或按 Escape 即可退出。`--render-preview` 可打开原有程序化粒子预览。命令行提供四个独立的呈现测试：
 
 ```powershell
 .\build-host-x64\Debug\emergences.exe --help
@@ -62,13 +95,14 @@ cmake --build --preset debug
 .\build-host-x64\Debug\emergences.exe --smoke-test
 .\build-host-x64\Debug\emergences.exe --render-smoke-test
 .\build-host-x64\Debug\emergences.exe --boids-smoke-test
+.\build-host-x64\Debug\emergences.exe --gpu-smoke-test
 ```
 
 `--smoke-test` 保留原有渐变三角形测试：实际提交并呈现至少 12 帧，在第 4 和第 8 帧后调整窗口大小，确认至少 3 代交换链后退出。
 
 `--render-smoke-test` 呈现至少 24 帧，依次使用 0 / 1 / 257 / 8192 / 96 / 2048 个程序化粒子，覆盖两个帧槽的空数组、扩容与缩减，以及箭头 / 圆点、颜色、动画暂停、网格 / 边界、相机和 ImGui 绘制；同样执行两次缩放并要求至少 3 代交换链，额外覆盖抗锯齿开启、关闭、再次开启，以及开启时缩放窗口，并检查实际采样数。
 
-`--boids-smoke-test` 呈现至少 48 帧真实 CPU 模拟，依次覆盖 0 / 1 / 257 / 4096 / 96 / 512 / 2048 个体，检查运动、暂停 / 单步 / 重置，切换规则参数、速度限制、两种边界及四种颜色，并对照未施力轨迹验证吸引 / 排斥实际生效，同时检查禁止光标输入时力被关闭。末段使用 16 个密集团块，并以零工作预算确定性检查补算抑制及界面提示，不依赖机器速度断言。它执行两次窗口缩放并要求至少 3 代交换链，也覆盖抗锯齿开关及实际采样数检查。三个测试在未完成检查就关闭窗口时失败，Debug 下要求校验层可用，并在 API 校验错误时返回失败。冒烟测试注入固定光标坐标与输入条件，不模拟逐项鼠标点击或真实窗口焦点事件。
+`--boids-smoke-test` 呈现至少 48 帧真实 CPU 模拟，依次覆盖 0 / 1 / 257 / 4096 / 96 / 512 / 2048 个体，检查运动、暂停 / 单步 / 重置，切换规则参数、速度限制、两种边界及四种颜色，并对照未施力轨迹验证吸引 / 排斥实际生效，同时检查禁止光标输入时力被关闭。末段使用 16 个密集团块，并以零工作预算确定性检查补算抑制及界面提示，不依赖机器速度断言。它执行两次窗口缩放并要求至少 3 代交换链，也覆盖抗锯齿开关及实际采样数检查。上述 CPU 呈现测试在未完成检查就关闭窗口时失败，Debug 下要求校验层可用，并在 API 校验错误时返回失败。冒烟测试注入固定光标坐标与输入条件，不模拟逐项鼠标点击或真实窗口焦点事件。
 
 交互运行建议使用 Release：`cmake --build --preset release`，程序位于 `build-host-x64/Release/emergences.exe`。CPU 耗时会随个体数量、规则半径和局部密度增加，卡顿时可减少数量或半径。`vs2022` 预设固定使用 `build-host-x64` 构建目录和 x64 宿主工具集；不使用预设时，可配置同等目标：
 
@@ -93,7 +127,7 @@ cmake --build --preset sim-release
 ctest --preset sim-release
 ```
 
-`vs2022-sim` 使用独立目录 `build/sim-only` 并设置 `EMERGENCES_BUILD_APP=OFF`。`emergences::sim` 包含 World、SpatialHash、CpuSimulation 和可选的 RuleKernel 接口；`emergences::boids` 包含三规则、BoidsRuleKernel、BoidsScene、CursorIntervention / CursorRepel / CursorAttract，并传递链接模拟库。
+`vs2022-sim` 使用独立目录 `build/sim-only` 并设置 `EMERGENCES_BUILD_APP=OFF`。`emergences::sim` 包含 World、SpatialHash、CpuSimulation、GpuSimulation、ComputeDevice 和可选的 RuleKernel 接口；`emergences::boids` 包含三规则、BoidsRuleKernel、BoidsGpu、BoidsScene、CursorIntervention / CursorRepel / CursorAttract，并传递链接模拟库。
 
 `EMERGENCES_ENABLE_OPENMP` 默认 `ON`，配置时检测到编译器支持就启用 OpenMP，没有支持时自动使用串行路径。设为 `OFF` 可验证不依赖 OpenMP 的兼容构建；该配置仍使用 Boids 三规则融合计算：
 
@@ -103,7 +137,7 @@ cmake --build build/sim-serial --config Release
 ctest --test-dir build/sim-serial -C Release --output-on-failure
 ```
 
-启用 `BUILD_TESTING` 时，模拟层和场景库公共头文件分别独立编译，检查头文件自包含及 `Agent` 布局约束，同时注册以下八项 CPU 测试：
+启用 `BUILD_TESTING` 时，模拟层和场景库公共头文件分别独立编译，检查头文件自包含及 `Agent` 布局约束，同时注册以下九项无 Vulkan 测试：
 
 | CTest 名称 | 检查范围 |
 | --- | --- |
@@ -115,8 +149,9 @@ ctest --test-dir build/sim-serial -C Release --output-on-failure
 | `boids_simulation` | 两种边界各 100 步全量邻域对照，以及 512 个体、240 步的确定性重放 |
 | `boids_scene` | 60 / 120 / 144 Hz 帧时间分割一致性、步数上限、暂停 / 单步 / 重置、显示颜色不修改模拟、周期密度与固定色阶 |
 | `boids_cursor` | 吸引 / 排斥方向、距离衰减、开关 / 零强度 / 零半径、周期接缝、非法输入与速度限制 |
+| `boids_backend` | 状态 / 参数 / 规则所有权迁移、时钟 / 暂停、GPU 重置、无隐式回读、传输失败保留活动状态 |
 
-这些测试也随完整应用构建注册。GPU 模拟尚未实现。
+这些测试也随完整应用构建注册。`boids_backend` 额外使用内存计算设备验证后端转移契约，不需要 Vulkan。
 
 ## 使用 CPU Boids 库
 
@@ -184,8 +219,10 @@ ctest --test-dir build-host-x64 -C Release --output-on-failure
 | `vulkan_triangle` | `--smoke-test` 的三角形呈现和交换链缩放 |
 | `vulkan_particles` | `--render-smoke-test` 的粒子、辅助线、面板、相机和缓冲扩容路径 |
 | `vulkan_boids` | `--boids-smoke-test` 的真实模拟上传、控制状态、光标力、四种颜色和缩放路径 |
+| `vulkan_gpu_boids` | `--gpu-smoke-test` 的 GPU 直接绘制、0 / 1 / 257 / 100000 个体、后端切换、暂停 / 单步 / 重置、颜色、边界、缩放和 MSAA |
+| `boids_gpu_compute` | 真实计算设备上的 CPU/GPU 规则对照、网格与边界、状态读回和十万个体计算检查 |
 
-三个 GPU 呈现测试会短暂创建窗口并自动缩放，测试的是渲染路径，当前模拟仍使用 CPU。CTest 会检查输出，在任何 `[Vulkan validation]` 消息（包括资源销毁时的消息）出现时失败；Loader 的一般诊断仍会输出。GPU 测试默认关闭，`camera_math` 在构建应用且启用 `BUILD_TESTING` 时注册。完整应用套件包含八项 CPU 模拟 / 场景测试与 `camera_math`，启用 GPU 测试后再加入三项呈现测试，合计十二项；单独模拟构建运行上述八项 CPU 测试。
+四个呈现测试会短暂创建窗口并自动缩放；计算对照测试也需要可用的桌面和 Vulkan 设备。CTest 在任何 `[Vulkan validation]` 消息（包括资源销毁时的消息）出现时失败；Loader 的一般诊断仍会输出。GPU 测试默认关闭。完整套件包含九项无 Vulkan 模拟 / 场景测试、`camera_math`、四项呈现测试和一项 GPU 计算测试，合计十五项；单独模拟构建运行九项测试。
 
 需要额外复查同步时，可在当前 PowerShell 会话设置 `$env:VK_LAYER_VALIDATE_SYNC = '1'` 后运行 `ctest --preset debug`，完成后以 `Remove-Item Env:VK_LAYER_VALIDATE_SYNC` 清除该会话设置。
 
@@ -193,10 +230,10 @@ ctest --test-dir build-host-x64 -C Release --output-on-failure
 
 | 位置 | 当前职责 |
 | --- | --- |
-| `src/core/` | Window / Context；带逐图像深度附件的 Swapchain；共享命令记录、双帧同步与呈现的 FrameRenderer；Pipeline / Buffer / Descriptor；Camera、TriangleRenderer、ParticleRenderer、LineRenderer、ImGuiLayer |
-| `src/sim/` | `Agent`、`World`、`Rule`、`Intervention`、`Simulation` 和后端枚举；`cpu/` 下为 SpatialHash、RuleKernel 接口与 CpuSimulation |
+| `src/core/` | Window / Context；带逐图像深度附件的 Swapchain；共享命令记录、双帧同步与呈现的 FrameRenderer；Pipeline / Buffer / Descriptor、VulkanComputeDevice；Camera、TriangleRenderer、ParticleRenderer、LineRenderer、ImGuiLayer |
+| `src/sim/` | `Agent`、`World`、`Rule`、`Intervention`、`Simulation`、`MotionLimits`、`ComputeDevice`；`cpu/` 下为 SpatialHash、RuleKernel 与 CpuSimulation，`gpu/` 下为 GpuSimulation |
 | `src/scenarios/boids/` | 纯 CPU 的三规则、BoidsRuleKernel、BoidsScene、光标干预及测试；LiveBoids 连接模拟 / 渲染 / 面板，保留程序化预览与三类呈现测试 |
-| `shaders/` | `particle.*` 粒子、`grid.*` 辅助线及 `smoke/triangle.*` 三角形着色器 |
+| `shaders/` | `particle.*` 粒子、`grid.*` 辅助线、`smoke/triangle.*` 三角形及 `compute/boids.comp` 计算着色器 |
 | `cmake/` | 依赖获取与着色器编译辅助配置 |
 | `third_party/` | 第三方依赖说明；实际源码由 FetchContent 放入构建目录 |
 
@@ -208,8 +245,14 @@ ctest --test-dir build-host-x64 -C Release --output-on-failure
 
 Vulkan 实现参考：[描述符布局与缓冲](https://docs.vulkan.org/tutorial/latest/05_Uniform_buffers/00_Descriptor_set_layout_and_buffer.html)、[深度缓冲](https://docs.vulkan.org/tutorial/latest/07_Depth_buffering.html)。
 
-模拟层不依赖 Vulkan。`Simulation::agents()` 返回借用的只读视图：CPU 后端提供个体数组，视图在下一次修改时失效；未来 GPU 后端返回空视图，不能隐式触发 GPU 回读。GPU 资源与同步桥接留待 Phase 4。规则和干预由模拟对象通过 `unique_ptr` 持有，仅在步进之间修改；干预仅适用于 CPU，未来 GPU 后端必须拒绝非空干预列表。
+模拟层不依赖 Vulkan。`Simulation::agents()` 返回借用的只读视图：CPU 后端提供个体数组，视图在下一次修改时失效；GPU 后端始终返回空视图。`readback()` 是显式状态快照接口，GPU 会同步回读。世界、速度限制和状态导入通过共同的 `Simulation` 接口配置。规则和干预由模拟对象通过 `unique_ptr` 持有，仅在步进之间修改；GPU 拒绝非空干预列表。
 
-## 后续实现顺序
+## GPU compute 与后端切换
 
-下一阶段为 **Phase 4**：GPU compute、资源与同步桥接及后端切换。Phase 3 的人工交互复查可按上述面板和相机操作进行。
+`sim::ComputeDevice` 仅暴露不透明缓冲 / 管线句柄、上传、显式下载和批量 dispatch。`core::VulkanComputeDevice` 在同时支持 graphics / compute 的同一队列提交计算，使用设备本地 SSBO、传输暂存缓冲、阶段间内存屏障和 fence。当前每批计算同步等待完成，便于安全复用双份模拟状态和显示缓冲；尚未实现计算与图形异步重叠。
+
+`GpuSimulation` 不识别 Boids C++ 类型，由场景的 `BoidsGpu` 适配器编码规则。`shaders/compute/boids.comp` 按格计数、分块前缀和、散射得到连续的 cell→agent 索引区间，再查询相邻至多 27 格并按各规则半径精确过滤。周期相邻格去重；每格容量没有固定截断。三规则 GLSL 与 C++ 数学对应，浮点累计顺序及精度不同，因此跨后端采用数值容差比较，不承诺长期轨迹逐位相同。
+
+GPU 步进使用旧状态读取、新状态写入的双缓冲。四种显示颜色写入独立 GPU 显示缓冲，`ParticleRenderer::drawBuffer` 直接读取该 SSBO，不经过 CPU 数组。改变显示颜色不修改模拟状态。后端切换、数量变化和世界 / 速度限制变化允许显式回读；日常演化与着色不回读。
+
+`BoidsScene::currentSimulation()` 返回当前后端；原有 `simulation()` 保留 CPU 具体接口，GPU 活跃时不代表当前状态。`setBackend()` 在状态传输成功后提交切换，并保留暂停与模拟时钟；CPU 干预对象留在 CPU 后端。两种后端都保留固定步长与交互预算。均匀网格能减少普通分布的候选数量，但高密度或极大半径仍可退化到近似全量两两比较；十万个体的短时测试不代表所有密度下都能实时运行。

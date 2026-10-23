@@ -52,6 +52,10 @@ public:
     ~ParticleRenderer();
     void configure(VkRenderPass, VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT);
     void draw(VkCommandBuffer, std::size_t frame, std::span<const Particle>, const SceneView&);
+    // The external storage buffer must outlive its in-flight draw. Call only after
+    // waiting for this frame slot, as with draw(). It must contain Particle records.
+    void drawBuffer(VkCommandBuffer, std::size_t frame, VkBuffer, VkDeviceSize bufferBytes,
+                    std::uint32_t count, const SceneView&);
 private:
     const Context& context_;
     std::filesystem::path shaderDirectory_;

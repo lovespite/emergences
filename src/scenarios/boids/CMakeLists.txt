@@ -1,12 +1,12 @@
 add_library(emergences_boids STATIC Alignment.cpp Cohesion.cpp Separation.cpp
-    BoidsScene.cpp BoidsRuleKernel.cpp CursorIntervention.cpp CursorRepel.cpp CursorAttract.cpp)
+    BoidsScene.cpp BoidsRuleKernel.cpp BoidsGpu.cpp CursorIntervention.cpp CursorRepel.cpp CursorAttract.cpp)
 add_library(emergences::boids ALIAS emergences_boids)
 target_link_libraries(emergences_boids PUBLIC emergences::sim)
 emergences_target_defaults(emergences_boids)
 
 if(BUILD_TESTING)
     set(header_checks)
-    foreach(header Alignment Cohesion Separation BoidsRuleKernel BoidsScene CursorIntervention CursorRepel CursorAttract)
+    foreach(header Alignment Cohesion Separation BoidsRuleKernel BoidsScene BoidsGpu CursorIntervention CursorRepel CursorAttract)
         set(check "${CMAKE_CURRENT_BINARY_DIR}/header_checks/${header}.cpp")
         file(GENERATE OUTPUT "${check}" CONTENT "#include \"scenarios/boids/${header}.h\"\n")
         list(APPEND header_checks "${check}")
@@ -37,7 +37,11 @@ if(BUILD_TESTING)
     target_link_libraries(emergences_boids_scene_tests PRIVATE emergences::boids)
     emergences_target_defaults(emergences_boids_scene_tests)
     add_test(NAME boids_scene COMMAND emergences_boids_scene_tests)
-    set_tests_properties(boids_rules boids_simulation boids_kernel boids_cursor boids_scene
+    add_executable(emergences_boids_backend_tests tests/BoidsBackendTests.cpp)
+    target_link_libraries(emergences_boids_backend_tests PRIVATE emergences::boids)
+    emergences_target_defaults(emergences_boids_backend_tests)
+    add_test(NAME boids_backend COMMAND emergences_boids_backend_tests)
+    set_tests_properties(boids_rules boids_simulation boids_kernel boids_cursor boids_scene boids_backend
         PROPERTIES LABELS "cpu;sim;boids" TIMEOUT 30)
 endif()
 
@@ -52,15 +56,25 @@ if(EMERGENCES_BUILD_APP)
         VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:emergences>")
     emergences_target_defaults(emergences)
     emergences_add_shaders(emergences smoke/triangle.vert smoke/triangle.frag
-        particle.vert particle.frag grid.vert grid.frag)
+        particle.vert particle.frag grid.vert grid.frag compute/boids.comp)
 
     if(BUILD_TESTING AND EMERGENCES_ENABLE_GPU_TESTS)
         add_test(NAME vulkan_triangle COMMAND emergences --smoke-test)
         add_test(NAME vulkan_particles COMMAND emergences --render-smoke-test)
         add_test(NAME vulkan_boids COMMAND emergences --boids-smoke-test)
-        set_tests_properties(vulkan_triangle vulkan_particles vulkan_boids PROPERTIES
+        add_test(NAME vulkan_gpu_boids COMMAND emergences --gpu-smoke-test)
+        set_tests_properties(vulkan_triangle vulkan_particles vulkan_boids vulkan_gpu_boids PROPERTIES
             TIMEOUT 60 LABELS "gpu;smoke"
             RUN_SERIAL TRUE
             FAIL_REGULAR_EXPRESSION "\\[Vulkan validation\\];Validation Error")
+        add_executable(emergences_gpu_tests tests/GpuSimulationTests.cpp)
+        target_link_libraries(emergences_gpu_tests PRIVATE emergences::core emergences::boids)
+        emergences_target_defaults(emergences_gpu_tests)
+        target_compile_definitions(emergences_gpu_tests PRIVATE
+            EMERGENCES_SHADER_DIRECTORY="${PROJECT_BINARY_DIR}/$<CONFIG>/shaders")
+        add_dependencies(emergences_gpu_tests emergences_shaders)
+        add_test(NAME boids_gpu_compute COMMAND emergences_gpu_tests)
+        set_tests_properties(boids_gpu_compute PROPERTIES TIMEOUT 120 LABELS "gpu;sim;boids"
+            RUN_SERIAL TRUE FAIL_REGULAR_EXPRESSION "\\[Vulkan validation\\];Validation Error")
     endif()
 endif()

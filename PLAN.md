@@ -14,9 +14,10 @@
 - 已注册 `sim_world_grid`、`sim_cpu`、`boids_rules`、`boids_simulation` 四项 CPU 测试，提供 `sim-debug` / `sim-release` 构建与测试预设。**Phase 2 验收**：Debug / Release 全工程构建成功，完整 CTest 各 7/7 通过（四项 CPU 测试、相机和两项呈现测试），Debug 开启 `VK_LAYER_VALIDATE_SYNC=1` 后无校验诊断。独立 CPU 路径设置 `EMERGENCES_BUILD_APP=OFF`，在 `build/sim-phase2` 新目录构建 Debug / Release，两种配置 CPU 测试各 4/4 通过；旧 `build/sim-only` 工具集缓存保留未动。
 - **Phase 3 已完成**：BoidsScene 管理固定步长与独立显示记录；LiveBoids 连接模拟、粒子渲染和 Behavior / View 面板；光标通过屏幕射线投影到可调高度的 XZ 平面，提供球形邻域的吸引 / 排斥及范围圆环，UI / 相机操作、鼠标离开窗口和窗口失焦时关闭施力。GPU 后端选项灰显。
 - **Phase 3 验收**：Debug / Release 全工程构建成功，完整 CTest 各 **10/10 通过**；Debug 开启 `VK_LAYER_VALIDATE_SYNC=1` 后无校验诊断。新增 `boids_scene`、`boids_cursor`、`vulkan_boids`，相机测试增加射线 / 平面拾取。在 `build/sim-phase3` 独立配置 `EMERGENCES_BUILD_APP=OFF`，Debug / Release 构建及六项 CPU 测试各 **6/6 通过**。真实场景冒烟通过 48 帧、两次缩放及 3 代交换链，并验证吸引 / 排斥轨迹不同于未施力对照。SDK 截图已检查真实鸟群聚集、面板、密度色、圆点和干预范围，产物在 `build-host-x64/verification-phase3/`。未执行逐项 GUI 点击自动化或正式性能基准。
-- **下一阶段为 Phase 4**：CPU 场景验收后实现 GPU compute、资源与同步桥接及后端切换。
+- **Phase 4 已实现**：`ComputeDevice` / `VulkanComputeDevice` 提供设备本地缓冲、计算管线、批量 dispatch 与图形同步；`GpuSimulation` 和 Boids 编码器接入三规则、计数排序 / 前缀和均匀网格、独立 GPU 显示着色和零 CPU 拷贝绘制。面板可在 CPU / GPU 间保留状态切换，数量上限 100000，光标干预仅在 CPU 生效。
+- **Phase 4 验收**：Debug / Release 全工程构建及完整 CTest 各 **15/15 通过**，Debug 启用同步校验，无诊断；最终默认 GPU 调整后相关三项复测通过。独立无 Vulkan / 无 OpenMP 的 Debug / Release 各 **9/9 通过**。10 万个体计算及绘制、两种边界、32³ 网格、密集单格、四种颜色、后端状态迁移、暂停 / 单步 / 重置和 MSAA / 缩放均已覆盖。SDK 截图和测试日志在 `build-host-x64/verification-phase4/`，性能采样及限制见 README。
 - **Phase 3 长时性能修正**：复现了密集鸟群邻居增多与八步补算叠加造成的约 1 FPS。空间查询缓存最短位移、最大半径规则复用邻居列表，交互推进加入工作预算。历史测量使用当时的默认规则参数（`weight / radius`：Alignment `1 / 5`、Cohesion `0.6 / 5`、Separation `1.5 / 2`），不代表当前默认参数的性能：相同 20 秒状态的 Release 单步约 80.6→15.2 ms；八步约 624 ms 的交互推进改为预算下一步约 14 ms（过载时模拟时钟减速）。该组参数下 2048 个体连续 2400 步各检查点与原实现逐字节一致。回归增加密集呈现、预算耗尽、缓存与非缓存规则对照及极端周期边界检查，记录见 README 与 `build/perf-diagnosis/`。
-- **CPU 三规则融合与可选多线程**：BoidsScene 自动安装场景层的 `BoidsRuleKernel`，一次邻居遍历累加三规则；模拟层通过通用 `RuleKernel` 接口调度支持的并行计算，每步刷新参数快照。通用规则与不支持的规则集合继续串行。空间网格保持原实现，新增 `sim_cpu_parallel`、`boids_kernel`，当前 CPU 测试注册数为八项。OpenMP 可选，GPU compute 仍属于 Phase 4。
+- **CPU 三规则融合与可选多线程**：BoidsScene 自动安装场景层的 `BoidsRuleKernel`，一次邻居遍历累加三规则；模拟层通过通用 `RuleKernel` 接口调度支持的并行计算，每步刷新参数快照。通用规则与不支持的规则集合继续串行。空间网格保持原实现，新增 `sim_cpu_parallel`、`boids_kernel`，该阶段新增后 CPU 测试为八项。OpenMP 可选；Phase 4 另加入后端契约测试。
 
 构建与当前实现边界见 [README.md](README.md)。
 
@@ -63,7 +64,7 @@
 └─────────────────────────────────────────────────────────┘
 ```
 
-上图中的 CPU 后端、Boids 三规则、光标干预和场景连接已实现，GPU 后端留待 Phase 4。**关键设计**：模拟层只产出「个体状态」（position / velocity / color）。场景生成独立的显示颜色副本，再转换为 `core::Particle` 记录供渲染层消费；着色不会改变模拟轨迹。CPU 路径已接通，GPU 路径按以下接口方向扩展：
+上图中的 CPU / GPU 后端、Boids 三规则、光标干预和场景连接均已实现。**关键设计**：模拟层只产出「个体状态」（position / velocity / color）。场景生成独立的显示颜色副本；CPU 转换为 `core::Particle`，GPU 在计算着色器生成同布局的显示 SSBO。着色不会改变模拟轨迹。
 
 - CPU 后端：`agents()` 返回 CPU 数组 → 渲染层每帧上传到 GPU 实例缓冲。
 - GPU 后端：compute 直接写个体 SSBO → 渲染层把同一块 SSBO 当实例缓冲绑定（**零拷贝**）。
@@ -92,7 +93,8 @@ emergences/
 │   │   ├── Window.h/.cpp              # GLFW 封装
 │   │   ├── Context.h/.cpp             # instance/device/queues
 │   │   ├── Swapchain.h/.cpp           # 交换链 + 每图像深度附件 + framebuffer
-│   │   ├── Pipeline.h/.cpp            # 可配置图形管线；计算管线留待 Phase 4
+│   │   ├── Pipeline.h/.cpp            # 可配置图形管线
+│   │   ├── ComputeDevice.h/.cpp       # Vulkan 计算管线、缓冲、同步及资源桥接
 │   │   ├── TriangleRenderer.h/.cpp    # 原有三角形，复用 FrameRenderer
 │   │   ├── Buffer.h/.cpp              # 缓冲/内存所有权、映射写入与 flush
 │   │   ├── FrameRenderer.h/.cpp       # 共享命令记录、双帧同步、提交/呈现与重建
@@ -144,7 +146,9 @@ emergences/
 | 邻域查询（CPU） | 每步按启用规则最大半径重建稀疏均匀网格；通常格宽不小于该半径，跨度较小的轴使用一格。查询相邻 27 格、周期去重、精确距离过滤；密集或大半径查询可退化为全量两两比较 |
 | 积分（CPU） | 所有规则读取旧状态，权重求和 → clamp 加速度 → `vel += acc*dt` → clamp 速度上下限 → `pos += vel*dt` → 边界处理。BoidsScene 固定 `1/120` 秒，每帧最多 8 步；交互应用加入 8 ms 工作预算，丢弃超额整步积压 |
 | 规则融合与并行（CPU） | 场景层提供 BoidsRuleKernel，模拟层只依赖 RuleKernel 抽象。每步主线程准备参数快照，支持的规则集合按个体并行；保留各规则累计精度、邻居顺序和原加权顺序。网格重建、干预和最终校验保持串行 |
-| 后端切换 | `Backend` 枚举 + ImGui 下拉已接入，当前 CPU 可用、GPU 灰显；Phase 4 实现 GPU 自行演化、大 N |
+| 后端切换 | CPU / GPU 下拉保留状态、规则、世界、速度限制、暂停与模拟时钟；GPU 自行演化，CPU 提供干预 |
+| 邻域查询（GPU） | 格计数 → 分块前缀和 → 连续索引区间 → 27 邻格去重与精确半径过滤；最多 32³ 格，无格内数量截断 |
+| 计算同步 | 共用 graphics / compute 队列，批次内及计算 / 图形间内存屏障，每批 fence 等待；暂不异步重叠 |
 
 ---
 
@@ -241,11 +245,11 @@ Boids 三规则已实现为三个 `Rule` 子类（Alignment/Cohesion/Separation�
 9. ImGui 面板包含个体数量、三规则 weight/radius、速度 / 加速度限制、暂停 / 单步 / 重置、边界模式、后端选择（GPU 灰显）以及四种颜色。密度使用固定半径和色阶，避免显示变化影响模拟。
 10. `CursorRepel/Attract` 与屏幕射线拾取、可调 XZ 平面、范围圆环、输入占用保护已接入；新增两项 CPU 场景 / 干预测试、扩展相机测试和 48 帧真实 Boids 呈现测试。Debug / Release 构建、完整测试与独立 CPU 测试通过，结果见上方实施进度。
 
-### Phase 4 — GPU 后端（compute）
+### Phase 4 — GPU 后端（compute，已实现）
 
-11. 计算管线基建：compute shader、SSBO、dispatch、`ComputeDevice` 接口（core 实现）。
-12. `boids.comp`：三规则 GLSL + **均匀网格**（cell→agent 列表排序 + 前缀和，查询 27 邻域）。
-13. `gpu::GpuSimulation`：compute 写个体 SSBO，渲染层零拷贝绑定；ImGui 后端切换可用（CPU=带干预 / GPU=大 N 自行演化）。
+11. `sim::ComputeDevice` 不暴露 Vulkan 类型，`core::VulkanComputeDevice` 实现设备本地 SSBO、staging 上传 / 显式回读、计算管线和同步批量 dispatch；`ParticleRenderer::drawBuffer` 直接绑定显示缓冲。
+12. `boids.comp`：三规则 GLSL + **均匀网格**（格计数、分块前缀和、计数排序生成 cell→agent 连续索引，查询去重的 27 邻格）。规则顺序由场景编码器保留；GPU 浮点误差按容差验证。四种显示颜色在独立 GPU 缓冲计算。
+13. `gpu::GpuSimulation` 双缓冲同步积分；`BoidsScene` 管理显式状态转移及参数 / 规则所有权，ImGui 后端切换与 0–100000 数量可用。CPU 干预不迁移到 GPU。新增无 Vulkan 的后端契约测试、真实 GPU 数学对照和 GPU 场景呈现测试。应用默认选择 GPU，初始化失败时回退 CPU。
 
 **执行顺序承诺**：先完成 Phase 1–3 得到一个可运行、可干预的鸟群 demo，验证后再进 Phase 4。
 
@@ -253,7 +257,7 @@ Boids 三规则已实现为三个 `Rule` 子类（Alignment/Cohesion/Separation�
 
 ## 验证方式
 
-1. **CPU 独立构建与自动检查**：`cmake --preset vs2022-sim`，随后 `cmake --build --preset sim-debug`、`ctest --preset sim-debug`，Release 对应 `sim-release`。不需要 Vulkan SDK；八项测试为 `sim_world_grid`、`sim_cpu`、`sim_cpu_parallel`、`boids_rules`、`boids_kernel`、`boids_simulation`、`boids_scene`、`boids_cursor`。除原有全量邻域对照、确定性重放、场景和干预检查外，新增融合与独立规则的逐分量位对照、参数快照 / 重排 / 回退，以及串行 / 并行轨迹、工作线程异常和提交顺序。可在独立构建目录设置 `EMERGENCES_ENABLE_OPENMP=OFF` 检查串行兼容路径，命令见 README。完整应用配置 `cmake --preset vs2022 -DEMERGENCES_ENABLE_GPU_TESTS=ON` 后，Debug 使用 `ctest --preset debug`，Release 使用 `ctest --test-dir build-host-x64 -C Release --output-on-failure`，另包含 `camera_math`、`vulkan_triangle`、`vulkan_particles` 和 `vulkan_boids`，合计十二项；完整构建需要 Vulkan SDK。
+1. **CPU 独立构建与自动检查**：`cmake --preset vs2022-sim`，随后 `cmake --build --preset sim-debug`、`ctest --preset sim-debug`，Release 对应 `sim-release`。不需要 Vulkan SDK；九项测试为 `sim_world_grid`、`sim_cpu`、`sim_cpu_parallel`、`boids_rules`、`boids_kernel`、`boids_simulation`、`boids_scene`、`boids_cursor`、`boids_backend`。除原有全量邻域对照、确定性重放、场景和干预检查外，新增融合与独立规则的逐分量位对照、参数快照 / 重排 / 回退，以及串行 / 并行轨迹、工作线程异常和提交顺序。可在独立构建目录设置 `EMERGENCES_ENABLE_OPENMP=OFF` 检查串行兼容路径，命令见 README。完整应用配置 `cmake --preset vs2022 -DEMERGENCES_ENABLE_GPU_TESTS=ON` 后，Debug 使用 `ctest --preset debug`，Release 使用 `ctest --test-dir build-host-x64 -C Release --output-on-failure`，另包含 `camera_math`、`vulkan_triangle`、`vulkan_particles`、`vulkan_boids`、`vulkan_gpu_boids` 和 `boids_gpu_compute`，合计十五项；完整构建需要 Vulkan SDK。
 2. **渲染回归与真实场景冒烟**：`--render-preview` 打开 Phase 1 程序化预览；`--render-smoke-test` 保留粒子数量 / 缓冲变化、相机、UI 绘制和缩放回归。`--boids-smoke-test` 呈现至少 48 帧真实模拟，检查数量、暂停 / 单步 / 重置、规则、限幅、边界、颜色、光标开关 / 输入抑制和两次缩放。自动测试通过程序设置参数，不等同于鼠标逐项点击面板。
 3. **校验层**：Debug 运行无 `VK_LAYER_KHRONOS_validation` 报错；可设置 `VK_LAYER_VALIDATE_SYNC=1` 加验同步。
 4. **Phase 3 交互复查项目**：实现已接通，以下交互行为可按 README 说明复查；本轮尚未声明逐项 GUI 点击验收完成：
@@ -264,14 +268,14 @@ Boids 三规则已实现为三个 `Rule` 子类（Alignment/Cohesion/Separation�
    - 打开光标排斥 / 吸引，悬停时作用于选定高度附近的球形邻域；在 UI 上、相机输入期间或失焦时停止施力。
    - 在 View 中切换方向 / 速度 / 密度 / 单色，以及箭头 / 圆点、网格和边界。
 
-5. **Phase 4 后续目标**：ImGui 切到 GPU 后端，验证 10 万级个体的性能与 CPU 版行为一致性（同规则、同参数）；当前尚未实现或测得此规模性能。
+5. **Phase 4 验证**：`boids_gpu_compute` 在同状态、同规则和参数下对照 CPU/GPU，检查网格、边界、颜色与状态；`vulkan_gpu_boids` 覆盖 10 万个体绘制、后端切换、暂停 / 单步 / 重置、缩放与 MSAA。性能测量只代表所列测试分布和设备，不承诺高密度下实时运行。
 
 ---
 
 ## 风险与后续
 
 - **Vulkan 应用需要完整 SDK**：本机已安装并验证；独立 CPU 模拟与测试仅依赖 GLM。
-- 空间哈希在局部密度受控时减少候选查询，但不保证最坏线性复杂度。10 万级模拟属于后续 GPU 目标，本阶段未承诺 CPU 的该规模性能。
-- GPU 后端的「均匀网格」compute 是标准但中等复杂度的部分，故单列为 Phase 4，不与 CPU 版混淆交付。
+- 空间哈希在局部密度受控时减少候选查询，但不保证最坏线性复杂度。GPU 已验证 10 万级初始分布，但不承诺 CPU 的该规模性能或任意密度下的 GPU 实时性。
+- GPU 使用单精度与并行邻居累加，长期轨迹不承诺与 CPU 逐位相同；当前计算逐批同步等待，异步流水与更细的资源复用可继续优化。
 - 项目目录与 CMake 工程名均使用实际名称 `emergences`。
 - 后续可扩展：更多案例（群体行为、Lenia、CA）、规则「单源」共享、GPU 干预（把部分干预搬到 compute）。

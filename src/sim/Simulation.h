@@ -8,6 +8,7 @@
 #include "sim/Agent.h"
 #include "sim/Backend.h"
 #include "sim/Intervention.h"
+#include "sim/MotionLimits.h"
 #include "sim/Rule.h"
 
 namespace emergences::sim {
@@ -22,10 +23,17 @@ public:
     [[nodiscard]] virtual std::size_t count() const noexcept = 0;
     virtual void setCount(std::size_t count) = 0;
     [[nodiscard]] virtual Backend backend() const noexcept = 0;
+    [[nodiscard]] virtual const World& world() const noexcept = 0;
+    virtual void setWorld(const World&) = 0;
+    [[nodiscard]] virtual MotionLimits motionLimits() const noexcept = 0;
+    virtual void setMotionLimits(const MotionLimits&) = 0;
+    virtual void setAgents(std::span<const Agent>) = 0;
+    // Explicit snapshot; unlike agents(), GPU backends synchronize and read back.
+    [[nodiscard]] virtual std::vector<Agent> readback() = 0;
 
     // CPU: borrowed view with count() records, invalidated by the next mutation.
     // GPU: empty view; this accessor must not trigger implicit GPU readback.
-    // The zero-copy GPU resource / synchronization bridge is deferred to Phase 4.
+    // GPU storage is exposed separately by gpu::GpuSimulation via ComputeDevice.
     [[nodiscard]] virtual std::span<const Agent> agents() const noexcept = 0;
 
     // The simulation owns each inserted object. Mutate these collections only
@@ -35,7 +43,7 @@ public:
     [[nodiscard]] virtual std::vector<std::unique_ptr<Intervention>>&
         interventions() noexcept = 0;
 
-    // CPU backends apply interventions. A future GPU backend must reject a
+    // CPU backends apply interventions. GPU backends must reject a
     // nonempty intervention list instead of silently ignoring it.
 };
 
