@@ -67,6 +67,10 @@ void missingFileCreatesDefaults(const std::filesystem::path& directory) {
             "Floating point values must remain readable");
     require(text.find("view.agent_shape = arrow\n") != std::string::npos,
             "Enums must use symbolic names");
+    require(text.find("app.scenario = boids\n") != std::string::npos &&
+                text.find("scenarios.ants.seed = 12345\n") != std::string::npos &&
+                text.find("scenarios.ants.food_spawn_interval = 10\n") != std::string::npos,
+            "Existing users must retain Boids while new ant settings receive defaults");
     require(text.find("view.fullscreen = off\n") != std::string::npos,
             "Booleans must use on/off");
     ConfigFile reloaded(path);
@@ -176,8 +180,11 @@ void completeRoundTripAndComments(const std::filesystem::path& directory) {
                 "scenarios.boids.min_speed = 1\n");
     ConfigFile config(path);
     auto& s = config.settings();
+    s.scenario = 1;
     s.boids = {99999, false, true, 0.123456789F, 14.5F, 4.9F, 0.5F, 3.1F, 7.0F,
                8.0F, 14.0F, 59.0F, true, true, true, 19.5F, 99.9F, -38.0F};
+    s.ants = {19999, 2147483647, true, 19.5F, 9.5F, 1.45F, 11.5F, 7.5F,
+              19.5F, 2.9F, 7.9F, false, false, 1.25F, 119.5F};
     s.view = {true, false, false, false, false, 1, 3, 1.25F};
     s.camera = {-1000.0F, 1000.0F, 123.456789F, -2.0F, -0.9F, 1999.5F};
     s.preview = {19999, false, 2, 1.75F};
@@ -187,6 +194,10 @@ void completeRoundTripAndComments(const std::filesystem::path& directory) {
             "Existing full-line comments must survive");
     require(text.find("future.plugin = some opaque value ; retain me\n") != std::string::npos,
             "Unknown settings must survive verbatim");
+    require(text.find("app.scenario = ants\n") != std::string::npos &&
+                text.find("scenarios.ants.seed = 2147483647\n") != std::string::npos &&
+                text.find("scenarios.ants.food_spawn_interval = 119.5\n") != std::string::npos,
+            "Ant scene selection, full signed seed range, and food interval must save exactly");
     require(text.find("  view.fullscreen = on # display preference\n") != std::string::npos &&
                 text.find("view.fullscreen = on ; duplicate is updated too\n") != std::string::npos,
             "Known keys must update while retaining comments and indentation");
@@ -204,6 +215,73 @@ void completeRoundTripAndComments(const std::filesystem::path& directory) {
     s.view.agentSize = 1.0F;
     s.view.agentShape = 99;
     require(!config.save() && read(path) == twice, "Invalid runtime enums must leave existing file intact");
+}
+
+void antSettingsValidation(const std::filesystem::path& directory) {
+    const auto path = directory / "ants.cfg";
+    write(path, "app.scenario = ants\n"
+                "app.scenario = ant\n"
+                "scenarios.ants.count = 7000\n"
+                "scenarios.ants.count = 20001\n"
+                "scenarios.ants.count = -1\n"
+                "scenarios.ants.seed = 2147483647\n"
+                "scenarios.ants.seed = -1\n"
+                "scenarios.ants.seed = 2147483648\n"
+                "scenarios.ants.speed = 0\n"
+                "scenarios.ants.sensor_distance = 10.1\n"
+                "scenarios.ants.sensor_angle = 1.6\n"
+                "scenarios.ants.turn_speed = 13\n"
+                "scenarios.ants.wander = -0.1\n"
+                "scenarios.ants.deposit_rate = 21\n"
+                "scenarios.ants.evaporation = 3.1\n"
+                "scenarios.ants.diffusion = 8.1\n"
+                "scenarios.ants.show_home_pheromone = yes\n"
+                "scenarios.ants.show_food_pheromone = maybe\n"
+                "scenarios.ants.paused = maybe\n"
+                "scenarios.ants.agent_size = 0.01\n"
+                "scenarios.ants.speed = nan\n"
+                "scenarios.ants.count = 7.5\n"
+                "scenarios.ants.food_spawn_interval = 17.25\n"
+                "scenarios.ants.food_spawn_interval = 0\n"
+                "scenarios.ants.food_spawn_interval = 120.1\n"
+                "scenarios.ants.food_spawn_interval = nan\n"
+                "scenarios.ants.food_spawn_interval = inf\n");
+    ConfigFile config(path);
+    auto expected = Settings{};
+    expected.scenario = 1;
+    expected.ants.count = 7000;
+    expected.ants.seed = 2147483647;
+    expected.ants.foodSpawnInterval = 17.25F;
+    require(config.settings() == expected,
+            "Invalid ant settings must preserve the last valid values and defaults");
+    require(config.warnings().size() == 23, "Every invalid ant field needs a diagnostic");
+    auto& settings = config.settings();
+    settings.ants.seed = 0;
+    settings.ants.count = 0;
+    require(config.save(), "Zero seed and an empty ant world must be valid");
+    ConfigFile reloaded(path);
+    require(reloaded.settings() == settings && reloaded.warnings().empty(),
+            "Saving must normalize invalid duplicates and preserve scene-specific defaults");
+    const auto saved = read(path);
+    settings.ants.seed = -1;
+    require(!config.save() && read(path) == saved, "Invalid runtime ant seeds must not replace the file");
+    settings.ants.seed = 0;
+    settings.scenario = 2;
+    require(!config.save() && read(path) == saved, "Unknown runtime scenes must not replace the file");
+    settings.scenario = 1;
+    for (const auto invalid : {0.0F, 120.1F, std::numeric_limits<float>::quiet_NaN(),
+                               std::numeric_limits<float>::infinity()}) {
+        settings.ants.foodSpawnInterval = invalid;
+        require(!config.save() && read(path) == saved,
+                "Invalid runtime food intervals must not replace the file");
+    }
+    for (const auto interval : {1.0F, 120.0F}) {
+        settings.ants.foodSpawnInterval = interval;
+        require(config.save(), "Both food interval limits must save");
+        ConfigFile boundary(path);
+        require(boundary.settings() == settings && boundary.warnings().empty(),
+                "Both food interval limits must round trip without warnings");
+    }
 }
 
 void ioFailures(const std::filesystem::path& directory) {
@@ -266,6 +344,7 @@ int main() {
         examplesAndOrder(scratch.path);
         invalidValuesKeepPrevious(scratch.path);
         completeRoundTripAndComments(scratch.path);
+        antSettingsValidation(scratch.path);
         ioFailures(scratch.path);
         std::cout << "Configuration settings tests passed\n";
         return EXIT_SUCCESS;

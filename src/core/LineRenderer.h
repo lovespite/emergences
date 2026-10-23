@@ -16,7 +16,9 @@ struct SceneView;
 // destruction; the immutable grid/bounds vertex buffer survives reconfiguration.
 class LineRenderer final {
 public:
-    LineRenderer(const Context& context, std::filesystem::path shaderDirectory);
+    // Planar scenes use a ground grid and square boundary at Y=0.
+    LineRenderer(const Context& context, std::filesystem::path shaderDirectory,
+                 bool planar = false, float halfExtent = 40.0F);
     ~LineRenderer();
 
     LineRenderer(const LineRenderer&) = delete;
@@ -32,6 +34,7 @@ private:
     std::filesystem::path shaderDirectory_;
     std::unique_ptr<Buffer> vertices_;
     std::unique_ptr<Pipeline> pipeline_;
+    std::uint32_t boundsVertexCount_ = 24;
 };
 
 } // namespace emergences::core

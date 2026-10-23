@@ -50,7 +50,8 @@ if(BUILD_TESTING)
 endif()
 
 if(EMERGENCES_BUILD_APP)
-    add_executable(emergences main.cpp BoidsApp.cpp LiveBoids.cpp RenderPreview.cpp)
+    add_executable(emergences main.cpp BoidsApp.cpp LiveBoids.cpp RenderPreview.cpp
+        ../ants/AntPresentation.cpp)
     if(WIN32)
         set_target_properties(emergences PROPERTIES WIN32_EXECUTABLE TRUE)
         target_link_libraries(emergences PRIVATE user32 shell32)
@@ -59,7 +60,7 @@ if(EMERGENCES_BUILD_APP)
             target_link_options(emergences PRIVATE /ENTRY:mainCRTStartup)
         endif()
     endif()
-    target_link_libraries(emergences PRIVATE emergences::core emergences::boids emergences::imgui)
+    target_link_libraries(emergences PRIVATE emergences::core emergences::boids emergences::ants emergences::imgui)
     target_compile_definitions(emergences PRIVATE
         EMERGENCES_VERSION="${PROJECT_VERSION}"
         EMERGENCES_SHADER_DIRECTORY="$<TARGET_FILE_DIR:emergences>/shaders")
@@ -88,7 +89,8 @@ if(EMERGENCES_BUILD_APP)
         add_test(NAME vulkan_particles COMMAND emergences --render-smoke-test)
         add_test(NAME vulkan_boids COMMAND emergences --boids-smoke-test)
         add_test(NAME vulkan_gpu_boids COMMAND emergences --gpu-smoke-test)
-        set_tests_properties(vulkan_triangle vulkan_particles vulkan_boids vulkan_gpu_boids PROPERTIES
+        add_test(NAME vulkan_ants COMMAND emergences --ants-smoke-test)
+        set_tests_properties(vulkan_triangle vulkan_particles vulkan_boids vulkan_gpu_boids vulkan_ants PROPERTIES
             TIMEOUT 60 LABELS "gpu;smoke"
             RUN_SERIAL TRUE
             FAIL_REGULAR_EXPRESSION "\\[Vulkan validation\\];Validation Error")

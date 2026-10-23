@@ -1,8 +1,8 @@
 # emergences · 涌现模拟
 
-基于 C++20 和 Vulkan 的涌现模拟项目。项目按通用渲染层、通用模拟层和具体场景三层组织，首个场景采用 Boids 鸟群模型。完整方案见 [PLAN.md](PLAN.md)。
+基于 C++20 和 Vulkan 的涌现模拟项目。项目按通用渲染层、通用模拟层和具体场景三层组织，已接入 Boids 鸟群与 Ant Colony 蚁群两个场景。完整方案见 [PLAN.md](PLAN.md)。
 
-**Phase 1–4 已实现。** 默认应用运行 GPU compute Boids，可在面板切回 CPU 使用光标吸引 / 排斥。两种后端共用规则参数、固定步长和显示控制。GPU 使用均匀网格和计算着色器，显示结果直接绑定 Vulkan 粒子渲染；GPU 初始化失败时回退 CPU，并在面板显示原因。模拟与场景库仍可独立于 Vulkan 构建和测试。
+**Phase 1–4 已实现，并接入蚁群场景。** 默认应用运行 GPU compute Boids，可在面板切回 CPU 使用光标吸引 / 排斥，也可通过 **Scene → Ant Colony** 切换到蚁群。Boids 两种后端共用规则参数、固定步长和显示控制。GPU 使用均匀网格和计算着色器，显示结果直接绑定 Vulkan 粒子渲染；GPU 初始化失败时回退 CPU，并在面板显示原因。蚁群采用 CPU 模拟，支持随机食物、游走敌对生物、觅食归巢与双信息素轨迹。模拟与场景库仍可独立于 Vulkan 构建和测试。
 
 ## 构建前置
 
@@ -40,6 +40,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -Configuration R
 这些脚本复用下面的 `vs2022`、`release` / `debug` CMake 预设，生成可执行文件和配套资源，不制作安装包。对外复制请使用 Release，将 `emergences.exe`、完整的 `shaders/` 目录和带逐项中文注释的 `emergences.conf.example` 一起分发；其他 Windows 电脑还需支持 Vulkan 的显卡驱动及 x64 Visual C++ 运行库（含 OpenMP 运行库）。
 
 ## 本机验收记录
+
+蚁群接入验收（2026-10-23）：Debug / Release 完整构建成功，两种配置分别完成 13 项非 GPU 测试与 7 项 GPU / 呈现测试，均通过。新增 `ants_scene` 覆盖确定性、初始空信息素、沉积 / 扩散 / 挥发、固定步长与 60 秒觅食及食物守恒；`vulkan_ants` 覆盖实际呈现和场景切换。Debug 开启同步校验，无 Vulkan 校验诊断；SDK 截图确认食物、敌对生物、搬运状态与两类轨迹，截图位于 `build-host-x64/verification-ants/`。呈现检查通过程序驱动控件状态，未逐项执行鼠标点击验收。
 
 Phase 1 的历史验收记录（2026-10-22）：本机 SDK `1.4.363.0`（`D:\VulkanSDK\1.4.363.0`）的头文件、链接库、`glslc` 和 `VK_LAYER_KHRONOS_validation` 均可用。应用在 NVIDIA GeForce RTX 4060 Laptop GPU 上通过 Debug、Release 完整构建，当时两种配置的 CTest 均为 **3/3 通过**：`camera_math`、`vulkan_triangle`、`vulkan_particles`。Debug 额外启用 `VK_LAYER_VALIDATE_SYNC=1` 后无校验诊断。模拟公共头文件独立编译和 `Agent` 布局检查也已通过。该记录不包含 Phase 2 新增的四项 CPU 测试。
 
@@ -83,18 +85,40 @@ cmake --build --preset debug
 - **F11** 或面板顶部的 **Fullscreen (F11)** 开关切换全屏；使用窗口当前所在的显示器，退出全屏后恢复窗口位置、尺寸及最大化状态。
 - **F1** 显示 / 隐藏控制面板，隐藏后模拟和相机操作继续，再按一次即可恢复。全屏开关和 F1 同样适用于 `--render-preview`。
 
+### 蚁群场景
+
+在面板顶部选择 **Scene → Ant Colony**，或使用 `emergences.exe --ants` 直接启动蚁群。两个场景共用窗口、相机操作和呈现框架；切换时保留各自的个体、参数、暂停状态与模拟时钟，未显示的场景停止推进。
+
+蚁群默认包含 **1500 只蚂蚁**，数量可调至 0–20000，采用 CPU 固定步长模拟。世界位于 `[-80,80]` 的 XZ 平面，尺寸为 **160×160**，长宽均为原来的两倍；信息素使用 256×256 网格，保持原有空间精度。蚁巢在中央；种子生成六片食物和三个游走的敌对生物。蚂蚁探索、拾取食物并送回蚁巢，接近敌对生物时转向避让；当前敌对生物只影响行进路线，没有战斗或死亡机制。
+
+食物默认每 **10 个模拟秒**随机补充两片，间隔可调至 1–120 秒。补充时优先复用已耗尽的食物槽，最多保留 24 片；达到上限时跳过多余的生成，保留仍有余量的食物。暂停或切换到其他场景时停止计时；改变补充间隔或重置世界后重新计时，相同种子与参数可复现补充过程。
+
+**信息素初始为空。** 外出探索的蚂蚁留下归巢信息素，携带食物的蚂蚁留下食物信息素；两种轨迹逐步扩散、挥发，蚂蚁通过前方和左右方向的采样寻找路径。面板提供以下控制：
+
+- **Paused / Step / Reset**：暂停、暂停时单步、按当前种子恢复初始世界。重置保留数量、行为参数和暂停状态，并清空模拟时钟、搬运统计与信息素。
+- **World**：`World seed` 输入框是待应用的草稿；点击 **Generate from seed** 才生成并保存该种子的世界。**Random world** 选择新种子并立即生成世界。**Food interval (s)** 调整食物补充间隔，并显示下次补充倒计时和当前食物片数 / 24。改变蚂蚁数量同样会按当前种子重新开始。
+- **Behavior**：调整移动速度、传感距离 / 角度、转向、探索扰动，以及信息素沉积、挥发、扩散；**Clear pheromones** 只清除两种轨迹，保留当前世界和时钟。
+- **View**：分别显示蓝色归巢信息素和绿色食物信息素，调整蚂蚁大小、抗锯齿、网格 / 边界及相机。面板同时显示携带食物的蚂蚁数、已送达食物、剩余食物和敌对生物数量。
+
 ### 配置文件与设置记忆
 
-交互启动时自动读取**可执行文件旁的 `emergences.conf`**，与启动时的工作目录无关。首次运行会生成完整配置；面板、快捷键和相机操作产生的设置修改每秒检查一次，有变化才写入，正常退出时再保存一次。下次启动恢复 Boids 参数、CPU / GPU 选择、暂停、光标力、全屏、面板显隐、形状、颜色、大小、抗锯齿、网格 / 边界及相机位置。记忆的是设置，个体位置与模拟时间仍从初始状态开始。
+交互启动时自动读取**可执行文件旁的 `emergences.conf`**，与启动时的工作目录无关。首次运行会生成完整配置；面板、快捷键和相机操作产生的设置修改每秒检查一次，有变化才写入，正常退出时再保存一次。下次启动恢复当前场景、Boids 参数、CPU / GPU 选择、蚁群参数和已应用种子、暂停、光标力、全屏、面板显隐、形状、颜色、大小、抗锯齿、网格 / 边界及相机位置。记忆的是设置，个体位置、食物消耗、信息素与模拟时间仍从初始状态开始。
 
 文件采用点路径与 `key = value` 格式，例如：
 
 ```ini
+app.scenario = ants
 scenarios.boids.cohesion_weight = 0.11
 scenarios.boids.min_speed = 8
 scenarios.boids.max_speed = 14
 scenarios.boids.backend = gpu
 scenarios.boids.cursor.enabled = off
+scenarios.ants.count = 1500
+scenarios.ants.seed = 12345
+scenarios.ants.food_spawn_interval = 10
+scenarios.ants.deposit_rate = 4
+scenarios.ants.show_home_pheromone = on
+scenarios.ants.show_food_pheromone = on
 view.fullscreen = on
 view.agent_shape = arrow
 view.color = direction
@@ -102,7 +126,7 @@ view.agent_size = 0.45
 view.panel_visible = on
 ```
 
-支持空行、`#` / `;` 注释（包括行尾注释）、UTF-8 BOM 和 Windows 换行。布尔值使用 `on` / `off`；形状为 `arrow` / `dot`，颜色为 `direction` / `speed` / `density` / `solid`，边界 `scenarios.boids.boundary` 为 `wrap` / `bounce`。可编辑项及范围与面板一致；相机位于 `view.camera.*`，角度单位为弧度。可参考 [emergences.conf.example](emergences.conf.example)，或直接编辑首次运行生成的完整文件。
+支持空行、`#` / `;` 注释（包括行尾注释）、UTF-8 BOM 和 Windows 换行。布尔值使用 `on` / `off`；场景 `app.scenario` 为 `boids` / `ants`，蚁群设置位于 `scenarios.ants.*`，其种子范围为 0–2147483647。形状为 `arrow` / `dot`，颜色为 `direction` / `speed` / `density` / `solid`，边界 `scenarios.boids.boundary` 为 `wrap` / `bounce`。可编辑项及范围与面板一致；相机位于 `view.camera.*`，角度单位为弧度。可参考 [emergences.conf.example](emergences.conf.example)，或直接编辑首次运行生成的完整文件。
 
 构建应用时会将 `emergences.conf.example` 同步到可执行文件旁，Debug / Release 均包含。示例逐项解释用途、取值范围、默认值和相关行为；只修改示例注释后再次构建也会更新副本。程序不会自动加载 `.example` 文件；要使用其示例值，可在关闭程序后复制为 `emergences.conf`，或复制为另一配置文件并用 `--config` 指定。构建不会覆盖个人的 `emergences.conf`。
 
@@ -111,6 +135,7 @@ view.panel_visible = on
 ```powershell
 .\build-host-x64\Release\emergences.exe --config D:\Profiles\flock.conf
 .\build-host-x64\Release\emergences.exe --no-config
+.\build-host-x64\Release\emergences.exe --ants
 ```
 
 `--config` 指定要读取和记忆的文件，相对路径以当前工作目录为基准，父目录需已存在。`--no-config` 仅使用默认值，不读写配置。所有冒烟测试也不读写配置。程序化预览共用全屏、形状、抗锯齿、网格 / 边界、面板显隐和相机设置，预览的数量、动画、大小及颜色单独保存在 `scenarios.preview.*`。删除配置文件后重新启动即可恢复默认设置；构建不会覆盖已有配置。
@@ -123,7 +148,7 @@ Windows 版本启动时不创建控制台窗口。双击程序直接显示应用
 
 2026-10-22 针对「运行一段时间降至约 1 FPS」的性能回归使用当时的默认规则参数（`weight / radius`：Alignment `1 / 5`、Cohesion `0.6 / 5`、Separation `1.5 / 2`）：2048 个体演化 20 秒后，平均邻居数由 16.5 增至 304。已让空间查询缓存最短位移、复用最大半径邻居列表，消除规则中的重复周期计算，并加入上述交互预算。对保存的同一 20 秒状态，本机 Release 配对测量单步由约 **80.6 ms 降至 15.2 ms**；交互推进由八步约 **624 ms** 降至预算下的一步约 **14 ms**。后者包含模拟时钟减速，不能解读为维持相同实时推进速度下的帧率提升。8 个快照的一步输出，以及该组参数下连续 2400 步的 5 / 10 / 15 / 20 秒状态均与旧版逐字节一致。以上是旧默认参数的历史测量，不代表当前默认参数的性能。基准程序、快照与日志在 `build/perf-diagnosis/`；数值受主机负载影响，不承诺所有密度或数量下的帧率。
 
-关闭窗口或按 Escape 即可退出。`--render-preview` 可打开原有程序化粒子预览。命令行提供四个独立的呈现测试：
+关闭窗口或按 Escape 即可退出。`--render-preview` 可打开原有程序化粒子预览。命令行提供五个独立的呈现测试：
 
 ```powershell
 .\build-host-x64\Debug\emergences.exe --help
@@ -133,6 +158,7 @@ Windows 版本启动时不创建控制台窗口。双击程序直接显示应用
 .\build-host-x64\Debug\emergences.exe --render-smoke-test
 .\build-host-x64\Debug\emergences.exe --boids-smoke-test
 .\build-host-x64\Debug\emergences.exe --gpu-smoke-test
+.\build-host-x64\Debug\emergences.exe --ants-smoke-test
 ```
 
 `--smoke-test` 保留原有渐变三角形测试：实际提交并呈现至少 12 帧，在第 4 和第 8 帧后调整窗口大小，确认至少 3 代交换链后退出。
@@ -142,6 +168,8 @@ Windows 版本启动时不创建控制台窗口。双击程序直接显示应用
 粒子预览、CPU / GPU Boids 呈现测试还覆盖全屏进入 / 退出、F1 隐藏 / 恢复及按住不重复切换，检查隐藏期间没有面板绘制命令。`window_fullscreen` 桌面测试独立检查全屏窗口恢复、F11 按键与 ImGui 回调衔接；这些测试需开启 `EMERGENCES_ENABLE_GPU_TESTS` 并在有桌面的环境运行。
 
 `--boids-smoke-test` 呈现至少 48 帧真实 CPU 模拟，依次覆盖 0 / 1 / 257 / 4096 / 96 / 512 / 2048 个体，检查运动、暂停 / 单步 / 重置，切换规则参数、速度限制、两种边界及四种颜色，并对照未施力轨迹验证吸引 / 排斥实际生效，同时检查禁止光标输入时力被关闭。末段使用 16 个密集团块，并以零工作预算确定性检查补算抑制及界面提示，不依赖机器速度断言。它执行两次窗口缩放并要求至少 3 代交换链，也覆盖抗锯齿开关及实际采样数检查。上述 CPU 呈现测试在未完成检查就关闭窗口时失败，Debug 下要求校验层可用，并在 API 校验错误时返回失败。冒烟测试注入固定光标坐标与输入条件，不模拟逐项鼠标点击或真实窗口焦点事件。
+
+`--ants-smoke-test` 呈现至少 48 帧蚁群场景，覆盖 0 / 1 / 257 / 1500 只蚂蚁、食物和敌对生物绘制、运动与自然信息素沉积、暂停 / 单步 / 重置、种子生成、清除 / 隐藏轨迹、帧预算及 Boids / 蚁群切换，并检查未显示的蚁群没有继续推进。同样覆盖窗口缩放、抗锯齿、全屏与面板显隐；长时间觅食、食物守恒及确定性重放由独立的 `ants_scene` 测试检查。
 
 交互运行建议使用 Release：`cmake --build --preset release`，程序位于 `build-host-x64/Release/emergences.exe`。CPU 耗时会随个体数量、规则半径和局部密度增加，卡顿时可减少数量或半径。`vs2022` 预设固定使用 `build-host-x64` 构建目录和 x64 宿主工具集；不使用预设时，可配置同等目标：
 
@@ -156,7 +184,7 @@ cmake --build build-host-x64 --config Debug
 
 ## 不依赖 Vulkan 的 CPU 模拟构建
 
-尚未安装 SDK 时，可以单独构建 CPU 模拟与 Boids 规则。该路径仅需要 GLM，首次配置仍需下载依赖，不需要 Vulkan、GLFW 或 ImGui。
+尚未安装 SDK 时，可以单独构建 CPU 模拟、Boids 规则与蚁群场景。该路径仅需要 GLM，首次配置仍需下载依赖，不需要 Vulkan、GLFW 或 ImGui。
 
 ```powershell
 cmake --preset vs2022-sim
@@ -166,7 +194,7 @@ cmake --build --preset sim-release
 ctest --preset sim-release
 ```
 
-`vs2022-sim` 使用独立目录 `build/sim-only` 并设置 `EMERGENCES_BUILD_APP=OFF`。`emergences::sim` 包含 World、SpatialHash、CpuSimulation、GpuSimulation、ComputeDevice 和可选的 RuleKernel 接口；`emergences::boids` 包含三规则、BoidsRuleKernel、BoidsGpu、BoidsScene、CursorIntervention / CursorRepel / CursorAttract，并传递链接模拟库。
+`vs2022-sim` 使用独立目录 `build/sim-only` 并设置 `EMERGENCES_BUILD_APP=OFF`。`emergences::sim` 包含 World、SpatialHash、CpuSimulation、GpuSimulation、ComputeDevice 和可选的 RuleKernel 接口；`emergences::boids` 包含三规则、BoidsRuleKernel、BoidsGpu、BoidsScene、CursorIntervention / CursorRepel / CursorAttract；`emergences::ants` 包含纯 CPU 的 AntScene、食物 / 敌对生物状态与双信息素场。两个场景库均传递链接模拟库。
 
 `EMERGENCES_ENABLE_OPENMP` 默认 `ON`，配置时检测到编译器支持就启用 OpenMP，没有支持时自动使用串行路径。设为 `OFF` 可验证不依赖 OpenMP 的兼容构建；该配置仍使用 Boids 三规则融合计算：
 
@@ -176,7 +204,7 @@ cmake --build build/sim-serial --config Release
 ctest --test-dir build/sim-serial -C Release --output-on-failure
 ```
 
-启用 `BUILD_TESTING` 时，模拟层和场景库公共头文件分别独立编译，检查头文件自包含及 `Agent` 布局约束，同时注册以下十一项无 Vulkan 测试：
+启用 `BUILD_TESTING` 时，模拟层和场景库公共头文件分别独立编译，检查头文件自包含及 `Agent` 布局约束，同时注册以下十二项无 Vulkan 测试：
 
 | CTest 名称 | 检查范围 |
 | --- | --- |
@@ -191,6 +219,7 @@ ctest --test-dir build/sim-serial -C Release --output-on-failure
 | `boids_cursor` | 吸引 / 排斥方向、距离衰减、开关 / 零强度 / 零半径、周期接缝、非法输入与速度限制 |
 | `boids_backend` | 状态 / 参数 / 规则所有权迁移、时钟 / 暂停、GPU 重置、无隐式回读、传输失败保留活动状态 |
 | `boids_config` | 配置应用后的初始速度与重置、参数采集、规则顺序、零个体及活动 GPU 参数无回读 |
+| `ants_scene` | 种子生成与确定性重放、空初始信息素、固定步长 / 暂停 / 单步 / 重置 / 预算、数量与参数边界、定时随机补充食物与容量上限、信息素扩散 / 挥发、长时间觅食与食物守恒、平面边界 |
 
 这些测试也随完整应用构建注册。`boids_backend` 额外使用内存计算设备验证后端转移契约，不需要 Vulkan。
 
@@ -262,9 +291,10 @@ ctest --test-dir build-host-x64 -C Release --output-on-failure
 | `vulkan_particles` | `--render-smoke-test` 的粒子、辅助线、面板、相机和缓冲扩容路径 |
 | `vulkan_boids` | `--boids-smoke-test` 的真实模拟上传、控制状态、光标力、四种颜色和缩放路径 |
 | `vulkan_gpu_boids` | `--gpu-smoke-test` 的 GPU 直接绘制、0 / 1 / 257 / 100000 个体、后端切换、暂停 / 单步 / 重置、颜色、边界、缩放和 MSAA |
+| `vulkan_ants` | `--ants-smoke-test` 的蚁群 / 食物 / 敌对生物 / 信息素绘制、数量、暂停 / 单步 / 重置、种子、预算与场景切换 |
 | `boids_gpu_compute` | 真实计算设备上的 CPU/GPU 规则对照、网格与边界、状态读回和十万个体计算检查 |
 
-四个呈现测试会短暂创建窗口并自动缩放；窗口测试和计算对照测试也需要可用的桌面和 Vulkan 设备。CTest 在任何 `[Vulkan validation]` 消息（包括资源销毁时的消息）出现时失败；Loader 的一般诊断仍会输出。GPU 测试默认关闭。完整套件包含十一项无 Vulkan 配置 / 模拟 / 场景测试、`camera_math`、`window_fullscreen`、四项呈现测试和一项 GPU 计算测试，合计十八项；单独模拟构建运行十一项测试。
+五个呈现测试会短暂创建窗口并自动缩放；窗口测试和计算对照测试也需要可用的桌面和 Vulkan 设备。CTest 在任何 `[Vulkan validation]` 消息（包括资源销毁时的消息）出现时失败；Loader 的一般诊断仍会输出。GPU 测试默认关闭。完整套件包含十二项无 Vulkan 配置 / 模拟 / 场景测试、`camera_math`、`window_fullscreen`、五项呈现测试和一项 GPU 计算测试，合计二十项；单独模拟构建运行十二项测试。此处列出当前注册项，历史验收记录仍对应各自当时的实现与测试数量。
 
 需要额外复查同步时，可在当前 PowerShell 会话设置 `$env:VK_LAYER_VALIDATE_SYNC = '1'` 后运行 `ctest --preset debug`，完成后以 `Remove-Item Env:VK_LAYER_VALIDATE_SYNC` 清除该会话设置。
 
@@ -275,7 +305,8 @@ ctest --test-dir build-host-x64 -C Release --output-on-failure
 | `src/config/` | 独立于 Vulkan 的点路径配置解析、校验与原子保存；支持设置记忆和注释保留 |
 | `src/core/` | Window / Context；带逐图像深度附件的 Swapchain；共享命令记录、双帧同步与呈现的 FrameRenderer；Pipeline / Buffer / Descriptor、VulkanComputeDevice；Camera、TriangleRenderer、ParticleRenderer、LineRenderer、ImGuiLayer |
 | `src/sim/` | `Agent`、`World`、`Rule`、`Intervention`、`Simulation`、`MotionLimits`、`ComputeDevice`；`cpu/` 下为 SpatialHash、RuleKernel 与 CpuSimulation，`gpu/` 下为 GpuSimulation |
-| `src/scenarios/boids/` | 纯 CPU 的三规则、BoidsRuleKernel、BoidsScene、光标干预及测试；LiveBoids 连接模拟 / 渲染 / 面板，保留程序化预览与三类呈现测试 |
+| `src/scenarios/boids/` | 纯 CPU 的三规则、BoidsRuleKernel、BoidsScene、光标干预及测试；LiveBoids 管理 Boids / 蚁群切换并连接模拟 / 渲染 / 面板，保留程序化预览与呈现测试 |
+| `src/scenarios/ants/` | 无 Vulkan 依赖的 AntScene、双信息素场、食物和敌对生物及测试；AntPresentation 负责蚁群面板、设置转换和渲染记录 |
 | `shaders/` | `particle.*` 粒子、`grid.*` 辅助线、`smoke/triangle.*` 三角形及 `compute/boids.comp` 计算着色器 |
 | `cmake/` | 依赖获取与着色器编译辅助配置 |
 | `third_party/` | 第三方依赖说明；实际源码由 FetchContent 放入构建目录 |
@@ -284,7 +315,7 @@ ctest --test-dir build-host-x64 -C Release --output-on-failure
 
 `Neighbor` 是 CPU 规则调用期间借用的邻居记录，使用 `double distanceSquared` 保留半径边界比较的精度，并可携带 `std::optional<glm::vec3> displacement`，复用同一 self / 邻居 / 世界下的最短位移。手工构造的记录可省略缓存，此时规则回退到 `World::displacement`；缓存只在查询借用期有效。它不属于 `Agent` 的 GPU 记录，不改变上述 48 字节布局。
 
-渲染层使用独立的 `core::Particle` 记录和 `SceneView` 相机常量。场景将 CPU 显示记录转换为粒子数据，经各帧槽的 storage buffer 上传；顶点着色器通过 `gl_InstanceIndex` 读取，生成箭头或圆点 billboard。网格 / 边界使用静态顶点缓冲，光标作用范围由 ImGui 背景绘制列表显示为三个空间圆环。`FrameRenderer` 统一负责三角形、程序化预览与真实 Boids 的提交，交换链每幅图像各有深度附件，ImGui 的 Vulkan 资源在重建时重新配置。
+渲染层使用独立的 `core::Particle` 记录和 `SceneView` 相机常量。场景将 CPU 显示记录转换为粒子数据，经各帧槽的 storage buffer 上传；顶点着色器通过 `gl_InstanceIndex` 读取，生成箭头、圆点或蚂蚁形状。网格 / 边界使用静态顶点缓冲，光标作用范围由 ImGui 背景绘制列表显示为三个空间圆环。`FrameRenderer` 统一负责三角形、程序化预览、Boids 与蚁群的提交，交换链每幅图像各有深度附件，ImGui 的 Vulkan 资源在重建时重新配置。
 
 Vulkan 实现参考：[描述符布局与缓冲](https://docs.vulkan.org/tutorial/latest/05_Uniform_buffers/00_Descriptor_set_layout_and_buffer.html)、[深度缓冲](https://docs.vulkan.org/tutorial/latest/07_Depth_buffering.html)。
 

@@ -1,6 +1,8 @@
 #include "scenarios/boids/BoidsApp.h"
 #include "scenarios/boids/BoidsScene.h"
 #include "scenarios/boids/BoidsConfig.h"
+#include "scenarios/ants/AntScene.h"
+#include "scenarios/ants/AntPresentation.h"
 #include "config/AppConfig.h"
 #include "scenarios/boids/BoidsGpu.h"
 #include "scenarios/boids/CursorAttract.h"
@@ -33,6 +35,8 @@ namespace emergences::scenarios::boids {
 namespace {
 
 struct Controls {
+    int scenario = 0;
+    config::AntSettings ants;
     bool preferGpu = true;
     bool panelVisible = true;
     int shape = 0;
@@ -68,18 +72,49 @@ bool slider(const char* label, float& value, float minimum, float maximum) {
     return value != old;
 }
 
-Actions drawPanel(BoidsScene& scene, Controls& controls, core::Camera& camera,
+Actions drawPanel(BoidsScene& scene, ants::AntScene& antScene, Controls& controls, core::Camera& camera,
                   const core::Context& context, const core::FrameRenderer& renderer,
                   bool& fullscreen, const config::ConfigFile* config) {
     Actions actions;
     ImGui::SetNextWindowPos(ImVec2(18, 18), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(350, std::max(180.0F,
         std::min(690.0F, ImGui::GetIO().DisplaySize.y - 36.0F))), ImGuiCond_Always);
-    ImGui::Begin("Emergences | Boids", nullptr, ImGuiWindowFlags_NoResize);
-    ImGui::TextColored(ImVec4(0.3F, 0.8F, 0.95F, 1.0F), "PHASE 4 / LIVE BOIDS");
+    ImGui::Begin("Emergences", nullptr, ImGuiWindowFlags_NoResize);
+    ImGui::TextColored(ImVec4(0.3F, 0.8F, 0.95F, 1.0F), "%s",
+        controls.scenario == 1 ? "ANT COLONY / LIVE ECOSYSTEM" : "LIVE BOIDS");
     ImGui::Checkbox("Fullscreen (F11)", &fullscreen);
     ImGui::SameLine();
     ImGui::TextDisabled("F1: hide panel");
+    if (ImGui::Combo("Scene", &controls.scenario, "Boids\0Ant Colony\0")) {
+        actions.skipElapsed = true;
+        if (controls.scenario == 1) ants::resetAntCamera(camera);
+        else camera.reset();
+    }
+    if (controls.scenario == 1) {
+        if (config) {
+            if (!config->lastError().empty()) ImGui::TextWrapped("Settings: %s", config->lastError().c_str());
+            if (!config->warnings().empty() && ImGui::TreeNode("Settings warnings")) {
+                for (const auto& warning : config->warnings()) ImGui::TextWrapped("%s", warning.c_str());
+                ImGui::TreePop();
+            }
+        }
+        const auto antActions = ants::drawAntControls(antScene, controls.ants, camera, renderer,
+            controls.antialiasing, controls.grid, controls.bounds);
+        actions.reset = antActions.reset;
+        actions.step = antActions.step;
+        actions.skipElapsed |= antActions.skipElapsed;
+        ImGui::Separator();
+        ImGui::TextDisabled("Left drag: orbit | Middle drag: pan");
+        ImGui::TextDisabled("Wheel: zoom | Escape: close");
+        ImGui::Text("%.1f FPS | simulation %.2f ms (%zu steps)", static_cast<double>(ImGui::GetIO().Framerate),
+            static_cast<double>(controls.simulationMs), controls.simulationSteps);
+        if (controls.simulationLimited && !antScene.paused())
+            ImGui::TextColored(ImVec4(1, 0.75F, 0.35F, 1), "Simulation slowed to keep controls responsive.");
+        else ImGui::TextDisabled("Inactive scenes keep their state.");
+        ImGui::TextDisabled("%s", context.deviceName().c_str());
+        ImGui::End();
+        return actions;
+    }
     if (ImGui::BeginCombo("Backend", scene.backend() == sim::Backend::CPU ? "CPU" : "GPU compute")) {
         for (const auto backend : {sim::Backend::CPU, sim::Backend::GPU}) {
             ImGui::BeginDisabled(backend == sim::Backend::GPU && scene.gpuSimulation() == nullptr);
@@ -395,10 +430,10 @@ void gpuSmokeSettings(std::size_t frame, BoidsScene& scene, Controls& controls, 
 } // namespace
 
 int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, bool gpuSmokeTest,
-                  config::ConfigFile* config) {
-    const bool anySmokeTest = smokeTest || gpuSmokeTest;
+                  config::ConfigFile* config, bool startAnts, bool antsSmokeTest) {
+    const bool anySmokeTest = smokeTest || gpuSmokeTest || antsSmokeTest;
     if (anySmokeTest) config = nullptr;
-    core::Window window{1280, 800, "Emergences | Boids"};
+    core::Window window{1280, 800, "Emergences | Boids & Ant Colony"};
     if (config) window.setFullscreen(config->settings().view.fullscreen);
     core::Context context{window};
     std::cout << "Vulkan initialized on: " << context.deviceName() << '\n';
@@ -414,18 +449,29 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
     bool observedRepel = false;
     bool observedAttract = false;
     bool observedGpuMotion = false;
+    bool observedAntMotion = false;
+    bool observedAntTrail = false;
+    bool observedFoodTrail = false;
+    bool observedSceneSwitch = false;
+    std::uint64_t inactiveAntSteps = 0;
     {
         core::VulkanComputeDevice compute{context};
         core::ParticleRenderer particles{context, shaderDirectory};
+        core::ParticleRenderer environmentParticles{context, shaderDirectory};
         core::LineRenderer lines{context, shaderDirectory};
+        core::LineRenderer antLines{context, shaderDirectory, true, ants::AntScene::WorldHalfExtent};
         core::ImGuiLayer ui{context, window};
         // Submission owner dies first, waiting while all recorded resources live.
         core::FrameRenderer renderer{context, window};
         core::Camera camera;
         BoidsScene scene;
+        ants::AntScene antScene;
         Controls controls;
         if (config) {
             const auto& settings = config->settings();
+            controls.scenario = settings.scenario;
+            controls.ants = settings.ants;
+            ants::applyAntSettings(antScene, settings.ants);
             applyBoidsSettings(scene, settings.boids);
             controls.preferGpu = settings.boids.gpu;
             controls.panelVisible = settings.view.panelVisible;
@@ -443,6 +489,10 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
             const auto& savedCamera = settings.camera;
             camera.setState({{savedCamera.targetX, savedCamera.targetY, savedCamera.targetZ},
                              savedCamera.yaw, savedCamera.pitch, savedCamera.distance});
+        }
+        if (startAnts || antsSmokeTest) {
+            if (controls.scenario != 1 || !config) ants::resetAntCamera(camera);
+            controls.scenario = 1;
         }
         try {
             scene.initializeGpu(compute, (shaderDirectory / "compute/boids.comp.spv").string());
@@ -464,6 +514,9 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
         const auto saveSettings = [&] {
             if (!config) return;
             auto& settings = config->settings();
+            settings.scenario = controls.scenario;
+            ants::captureAntSettings(antScene, controls.ants);
+            settings.ants = controls.ants;
             captureBoidsSettings(scene, settings.boids);
             settings.boids.gpu = controls.preferGpu;
             settings.boids.cursor = controls.cursor;
@@ -489,6 +542,7 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
         };
         saveSettings();
         std::vector<core::Particle> renderParticles;
+        std::vector<core::Particle> antEnvironment;
         auto previous = std::chrono::steady_clock::now();
         auto nextSettingsSave = previous + std::chrono::seconds{1};
         const auto deadline = previous + std::chrono::seconds{55};
@@ -498,14 +552,16 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
             const auto now = std::chrono::steady_clock::now();
             const double elapsed = std::chrono::duration<double>(now - previous).count();
             previous = now;
-            if (anySmokeTest && now >= deadline) throw std::runtime_error("Boids smoke test timed out");
+            if (anySmokeTest && now >= deadline) throw std::runtime_error("Scene smoke test timed out");
             if (anySmokeTest) controls.antialiasing = (presentedFrames >= 2 && presentedFrames < 16) || presentedFrames >= 20;
             renderer.setAntialiasing(controls.antialiasing);
             bool fullscreen = window.isFullscreen();
             const bool presented = renderer.drawFrame(
                 [&](VkRenderPass pass, std::uint32_t imageCount) {
                     particles.configure(pass, renderer.sampleCount());
+                    environmentParticles.configure(pass, renderer.sampleCount());
                     lines.configure(pass, renderer.sampleCount());
+                    antLines.configure(pass, renderer.sampleCount());
                     ui.configure(pass, imageCount, renderer.sampleCount());
                 },
                 [&](VkCommandBuffer commands, VkExtent2D extent, std::size_t frame) {
@@ -531,8 +587,39 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
                     Actions actions;
                     if (smokeTest) smokeSettings(presentedFrames, scene, controls, camera, actions);
                     if (gpuSmokeTest) gpuSmokeSettings(presentedFrames, scene, controls, actions);
+                    if (antsSmokeTest) {
+                        if (presentedFrames == 1) antScene.setCount(0);
+                        if (presentedFrames == 2) antScene.setCount(1);
+                        if (presentedFrames == 3) antScene.setCount(257);
+                        if (presentedFrames == 4) antScene.setCount(1500);
+                        if (presentedFrames == 8) antScene.setPaused(true);
+                        if (presentedFrames == 9) actions.step = true;
+                        if (presentedFrames == 10) antScene.setPaused(false);
+                        if (presentedFrames == 12) { antScene.randomize(729U); actions.skipElapsed = true; }
+                        if (presentedFrames == 18) antScene.clearPheromones();
+                        if (presentedFrames == 24) actions.reset = true;
+                        if (presentedFrames == 30) {
+                            // Exercise mature foraging trails as well as the empty initial field.
+                            const auto foodBefore = antScene.totalGeneratedFood();
+                            for (int tick = 0; tick < 180; ++tick) antScene.advance(1.0 / 15.0);
+                            require(antScene.totalGeneratedFood() > foodBefore,
+                                "Ant world must generate food periodically without resetting the colony");
+                        }
+                        if (presentedFrames == 32) {
+                            inactiveAntSteps = antScene.totalSteps();
+                            controls.scenario = 0;
+                            scene.setPaused(true);
+                        }
+                        if (presentedFrames == 36) {
+                            require(antScene.totalSteps() == inactiveAntSteps, "Inactive ants must not advance");
+                            controls.scenario = 1;
+                            observedSceneSwitch = true;
+                        }
+                        controls.ants.showHomePheromone = presentedFrames < 26 || presentedFrames >= 30;
+                        controls.ants.showFoodPheromone = presentedFrames < 28 || presentedFrames >= 30;
+                    }
                     if (controls.panelVisible) {
-                        const auto panelActions = drawPanel(scene, controls, camera, context, renderer, fullscreen, config);
+                        const auto panelActions = drawPanel(scene, antScene, controls, camera, context, renderer, fullscreen, config);
                         actions.reset |= panelActions.reset;
                         actions.step |= panelActions.step;
                         actions.skipElapsed |= panelActions.skipElapsed;
@@ -551,6 +638,57 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
                         camera.zoom(ui.wheelDelta());
                     }
                     const float aspect = static_cast<float>(extent.width) / static_cast<float>(extent.height);
+                    if (controls.scenario == 1) {
+                        repel.setEnabled(false);
+                        attract.setEnabled(false);
+                        const auto stepsBefore = antScene.totalSteps();
+                        const auto oldAgents = antScene.agents();
+                        const auto firstPosition = oldAgents.empty() ? glm::vec3{0} : oldAgents.front().position;
+                        const auto started = std::chrono::steady_clock::now();
+                        controls.simulationSteps = 0;
+                        controls.simulationLimited = false;
+                        if (actions.reset) antScene.reset();
+                        else {
+                            if (actions.step && antScene.singleStep()) ++controls.simulationSteps;
+                            if (!actions.skipElapsed) {
+                                const double budget = antsSmokeTest ? (presentedFrames >= 40 ? 0.0 :
+                                    std::numeric_limits<double>::infinity()) : 0.008;
+                                controls.simulationSteps += antScene.advance(antsSmokeTest ? 1.0 / 60.0 : elapsed, budget);
+                                controls.simulationLimited = antScene.lastAdvanceLimited();
+                            }
+                        }
+                        controls.simulationMs = std::chrono::duration<float, std::milli>(
+                            std::chrono::steady_clock::now() - started).count();
+                        ants::makeAntParticles(antScene, controls.ants, renderParticles, antEnvironment);
+                        if (antsSmokeTest) {
+                            require(renderParticles.size() == antScene.count(), "Ant render count mismatch");
+                            require(!antEnvironment.empty(), "Ant world objects were not rendered");
+                            if (antScene.paused() && !actions.step && !actions.reset)
+                                require(antScene.totalSteps() == stepsBefore, "Paused ants advanced");
+                            if (actions.step) require(antScene.totalSteps() == stepsBefore + 1, "Ant single step failed");
+                            if (actions.reset) require(antScene.totalSteps() == 0, "Ant reset clock failed");
+                            if (presentedFrames >= 40) require(controls.simulationSteps == 1 && controls.simulationLimited,
+                                "Ant frame budget failed");
+                            if (!antScene.agents().empty() && !actions.reset && antScene.totalSteps() > stepsBefore)
+                                observedAntMotion |= antScene.agents().front().position != firstPosition;
+                            for (float value : antScene.homePheromone()) observedAntTrail |= value > 0.0F;
+                            for (float value : antScene.foodPheromone()) observedFoodTrail |= value > 0.0F;
+                        }
+                        core::SceneView view;
+                        view.viewProjection = camera.viewProjection(aspect);
+                        view.right = glm::vec4(camera.right(), 0);
+                        view.up = glm::vec4(camera.up(), 0);
+                        view.options = {1.0F, 1.0F, 0, 0};
+                        ui.endFrame();
+                        if (antsSmokeTest && !controls.panelVisible)
+                            require(ImGui::GetDrawData()->TotalVtxCount == 0, "Hidden ant panel left UI commands");
+                        antLines.draw(commands, view, controls.grid, controls.bounds);
+                        environmentParticles.draw(commands, frame, antEnvironment, view);
+                        view.options = {controls.ants.agentSize, 2.0F, 0, 0};
+                        particles.draw(commands, frame, renderParticles, view);
+                        ui.record(commands);
+                        return;
+                    }
                     const bool inputAllowed = !mouseCaptured && !cameraInput &&
                         ImGui::IsMousePosValid() && glfwGetWindowAttrib(window.nativeHandle(), GLFW_HOVERED) &&
                         glfwGetWindowAttrib(window.nativeHandle(), GLFW_FOCUSED);
@@ -714,6 +852,14 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
         std::cout << "GPU Boids smoke test passed: " << presentedFrames << " frames, " << generations
                   << " swapchain generations, CPU/GPU switches, 0/1/257/100000 agents, pause/step/reset, "
                      "colors/boundaries/MSAA/fullscreen/F1 panel, zero-copy rendering, 0 validation errors.\n";
+    }
+    if (antsSmokeTest) {
+        require(presentedFrames >= 48 && generations >= 3 && observedAntMotion && observedAntTrail &&
+            observedFoodTrail && observedSceneSwitch,
+            "Ant smoke test closed before all checks completed");
+        std::cout << "Ant smoke test passed: " << presentedFrames << " frames, " << generations
+            << " swapchain generations, food/hostiles/trails, 0/1/257/1500 ants, pause/step/reset/seed, "
+               "scene switches/budget/MSAA/fullscreen/F1 panel, 0 validation errors.\n";
     }
     return 0;
 }

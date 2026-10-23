@@ -37,7 +37,7 @@ struct alignas(16) SceneView {
     glm::mat4 viewProjection{1.0F};
     glm::vec4 right{1.0F, 0.0F, 0.0F, 0.0F};
     glm::vec4 up{0.0F, 1.0F, 0.0F, 0.0F};
-    // x: size scale; y: 0 arrows / 1 dots (billboard quads).
+    // x: size scale; y: 0 arrows / 1 dots / 2 ant silhouettes (billboard quads).
     glm::vec4 options{1.0F, 0.0F, 0.0F, 0.0F};
 };
 static_assert(sizeof(SceneView) == 112);

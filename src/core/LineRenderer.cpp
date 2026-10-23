@@ -5,6 +5,7 @@
 #include "core/Pipeline.h"
 
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
@@ -21,7 +22,6 @@ struct Vertex {
 };
 static_assert(sizeof(Vertex) == 24 && offsetof(Vertex, color) == 12);
 
-constexpr float halfExtent = 40.0F;
 constexpr std::uint32_t gridVertexCount = 44;
 constexpr std::uint32_t boundsVertexCount = 24;
 constexpr std::array<float, 3> gridColor{0.18F, 0.25F, 0.32F};
@@ -29,8 +29,12 @@ constexpr std::array<float, 3> boundsColor{0.40F, 0.63F, 0.78F};
 
 } // namespace
 
-LineRenderer::LineRenderer(const Context& context, std::filesystem::path shaderDirectory)
-    : context_(context), shaderDirectory_(std::move(shaderDirectory)) {
+LineRenderer::LineRenderer(const Context& context, std::filesystem::path shaderDirectory,
+                           bool planar, float halfExtent)
+    : context_(context), shaderDirectory_(std::move(shaderDirectory)), boundsVertexCount_(planar ? 8U : 24U) {
+    if (!std::isfinite(halfExtent) || halfExtent <= 0.0F || halfExtent > 100000.0F) {
+        throw std::invalid_argument("Line renderer extent must be finite and within (0, 100000]");
+    }
     std::vector<Vertex> vertices;
     vertices.reserve(gridVertexCount + boundsVertexCount);
     const auto line = [&vertices](std::array<float, 3> from, std::array<float, 3> to,
@@ -40,20 +44,28 @@ LineRenderer::LineRenderer(const Context& context, std::filesystem::path shaderD
     };
 
     // Eleven lines in each horizontal direction, including the floor perimeter.
+    const float floor = planar ? 0.0F : -halfExtent;
     for (int index = 0; index <= 10; ++index) {
         const float coordinate = -halfExtent + (2.0F * halfExtent / 10.0F) * static_cast<float>(index);
-        line({coordinate, -halfExtent, -halfExtent},
-             {coordinate, -halfExtent, halfExtent}, gridColor);
-        line({-halfExtent, -halfExtent, coordinate},
-             {halfExtent, -halfExtent, coordinate}, gridColor);
+        line({coordinate, floor, -halfExtent},
+             {coordinate, floor, halfExtent}, gridColor);
+        line({-halfExtent, floor, coordinate},
+             {halfExtent, floor, coordinate}, gridColor);
     }
 
     // Four edges parallel to each axis form the twelve edges of the world cube.
-    for (const float first : {-halfExtent, halfExtent}) {
-        for (const float second : {-halfExtent, halfExtent}) {
-            line({-halfExtent, first, second}, {halfExtent, first, second}, boundsColor);
-            line({first, -halfExtent, second}, {first, halfExtent, second}, boundsColor);
-            line({first, second, -halfExtent}, {first, second, halfExtent}, boundsColor);
+    if (planar) {
+        for (const float edge : {-halfExtent, halfExtent}) {
+            line({-halfExtent, 0.0F, edge}, {halfExtent, 0.0F, edge}, boundsColor);
+            line({edge, 0.0F, -halfExtent}, {edge, 0.0F, halfExtent}, boundsColor);
+        }
+    } else {
+        for (const float first : {-halfExtent, halfExtent}) {
+            for (const float second : {-halfExtent, halfExtent}) {
+                line({-halfExtent, first, second}, {halfExtent, first, second}, boundsColor);
+                line({first, -halfExtent, second}, {first, halfExtent, second}, boundsColor);
+                line({first, second, -halfExtent}, {first, second, halfExtent}, boundsColor);
+            }
         }
     }
 
@@ -104,7 +116,7 @@ void LineRenderer::draw(VkCommandBuffer commands, const SceneView& view,
         vkCmdDraw(commands, gridVertexCount, 1, 0, 0);
     }
     if (showBounds) {
-        vkCmdDraw(commands, boundsVertexCount, 1, gridVertexCount, 0);
+        vkCmdDraw(commands, boundsVertexCount_, 1, gridVertexCount, 0);
     }
 }
 

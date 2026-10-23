@@ -1,0 +1,18 @@
+add_library(emergences_ants STATIC AntScene.cpp)
+add_library(emergences::ants ALIAS emergences_ants)
+target_link_libraries(emergences_ants PUBLIC emergences::sim)
+emergences_target_defaults(emergences_ants)
+
+if(BUILD_TESTING)
+    set(header_check "${CMAKE_CURRENT_BINARY_DIR}/header_checks/AntScene.cpp")
+    file(GENERATE OUTPUT "${header_check}" CONTENT "#include \"scenarios/ants/AntScene.h\"\n")
+    add_library(emergences_ants_header_check OBJECT "${header_check}")
+    target_link_libraries(emergences_ants_header_check PRIVATE emergences::ants)
+    emergences_target_defaults(emergences_ants_header_check)
+
+    add_executable(emergences_ants_scene_tests tests/AntSceneTests.cpp)
+    target_link_libraries(emergences_ants_scene_tests PRIVATE emergences::ants)
+    emergences_target_defaults(emergences_ants_scene_tests)
+    add_test(NAME ants_scene COMMAND emergences_ants_scene_tests)
+    set_tests_properties(ants_scene PROPERTIES LABELS "cpu;sim;ants" TIMEOUT 60)
+endif()

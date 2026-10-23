@@ -28,6 +28,25 @@ struct BoidsSettings {
     bool operator==(const BoidsSettings&) const = default;
 };
 
+struct AntSettings {
+    int count = 1500;
+    int seed = 12345;
+    bool paused = false;
+    float speed = 6.0F;
+    float sensorDistance = 3.0F;
+    float sensorAngle = 0.65F;
+    float turnSpeed = 4.0F;
+    float wander = 1.2F;
+    float depositRate = 4.0F;
+    float evaporation = 0.18F;
+    float diffusion = 1.5F;
+    bool showHomePheromone = true;
+    bool showFoodPheromone = true;
+    float agentSize = 0.5F;
+    float foodSpawnInterval = 10.0F;
+    bool operator==(const AntSettings&) const = default;
+};
+
 struct ViewSettings {
     bool fullscreen = false;
     bool panelVisible = true;
@@ -59,7 +78,9 @@ struct PreviewSettings {
 };
 
 struct Settings {
+    int scenario = 0;
     BoidsSettings boids;
+    AntSettings ants;
     ViewSettings view;
     CameraSettings camera;
     PreviewSettings preview;

@@ -38,11 +38,13 @@ struct Field {
 
 std::vector<Field> fields(Settings& settings) {
     auto& b = settings.boids;
+    auto& a = settings.ants;
     auto& v = settings.view;
     auto& c = settings.camera;
     auto& p = settings.preview;
     constexpr float pi = 3.14159265358979323846F;
     return {
+        {"app.scenario", &settings.scenario, 0.0F, 0.0F, "boids|ants"},
         {"scenarios.boids.count", &b.count, 0.0F, 100000.0F},
         {"scenarios.boids.backend", &b.gpu, 0.0F, 0.0F, "cpu|gpu"},
         {"scenarios.boids.paused", &b.paused},
@@ -61,6 +63,21 @@ std::vector<Field> fields(Settings& settings) {
         {"scenarios.boids.cursor.radius", &b.cursorRadius, 0.0F, 20.0F},
         {"scenarios.boids.cursor.strength", &b.cursorStrength, 0.0F, 100.0F},
         {"scenarios.boids.cursor.plane_height", &b.cursorPlaneHeight, -39.0F, 39.0F},
+        {"scenarios.ants.count", &a.count, 0.0F, 20000.0F},
+        {"scenarios.ants.seed", &a.seed, 0.0F, static_cast<float>(std::numeric_limits<int>::max())},
+        {"scenarios.ants.paused", &a.paused},
+        {"scenarios.ants.speed", &a.speed, 0.1F, 20.0F},
+        {"scenarios.ants.sensor_distance", &a.sensorDistance, 0.1F, 10.0F},
+        {"scenarios.ants.sensor_angle", &a.sensorAngle, 0.05F, 1.5F},
+        {"scenarios.ants.turn_speed", &a.turnSpeed, 0.1F, 12.0F},
+        {"scenarios.ants.wander", &a.wander, 0.0F, 8.0F},
+        {"scenarios.ants.deposit_rate", &a.depositRate, 0.0F, 20.0F},
+        {"scenarios.ants.evaporation", &a.evaporation, 0.0F, 3.0F},
+        {"scenarios.ants.diffusion", &a.diffusion, 0.0F, 8.0F},
+        {"scenarios.ants.show_home_pheromone", &a.showHomePheromone},
+        {"scenarios.ants.show_food_pheromone", &a.showFoodPheromone},
+        {"scenarios.ants.agent_size", &a.agentSize, 0.1F, 1.5F},
+        {"scenarios.ants.food_spawn_interval", &a.foodSpawnInterval, 1.0F, 120.0F},
         {"view.fullscreen", &v.fullscreen},
         {"view.panel_visible", &v.panelVisible},
         {"view.antialiasing", &v.antialiasing},

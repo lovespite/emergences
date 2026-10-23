@@ -25,8 +25,8 @@ void main() {
                                 vec2(0.0, 1.0), vec2(0.0, -0.15), vec2(0.9, -0.65));
     const vec2 quad[6] = vec2[](vec2(-1,-1),vec2(1,-1),vec2(1,1),
                                vec2(-1,-1),vec2(1,1),vec2(-1,1));
-    dotMode = view.options.y > 0.5 ? 1 : 0;
-    localPosition = dotMode == 1 ? quad[gl_VertexIndex] : arrow[gl_VertexIndex];
+    dotMode = int(view.options.y + 0.5);
+    localPosition = dotMode != 0 ? quad[gl_VertexIndex] : arrow[gl_VertexIndex];
     vec2 offset = dotMode == 1 ? localPosition * 0.5 :
                   side * localPosition.x + forward * localPosition.y;
     vec3 position = p.position + (view.right.xyz * offset.x + view.up.xyz * offset.y)
