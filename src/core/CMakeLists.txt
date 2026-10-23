@@ -16,3 +16,13 @@ if(BUILD_TESTING)
     emergences_target_defaults(emergences_camera_tests)
     add_test(NAME camera_math COMMAND emergences_camera_tests)
 endif()
+
+if(BUILD_TESTING AND EMERGENCES_ENABLE_GPU_TESTS)
+    add_executable(emergences_window_tests Window.cpp tests/WindowTests.cpp)
+    target_include_directories(emergences_window_tests PRIVATE "${PROJECT_SOURCE_DIR}/src")
+    target_link_libraries(emergences_window_tests PRIVATE glfw emergences::imgui)
+    emergences_target_defaults(emergences_window_tests)
+    add_test(NAME window_fullscreen COMMAND emergences_window_tests)
+    set_tests_properties(window_fullscreen PROPERTIES
+        TIMEOUT 30 LABELS "gpu;window" RUN_SERIAL TRUE)
+endif()

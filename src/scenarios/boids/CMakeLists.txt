@@ -47,6 +47,14 @@ endif()
 
 if(EMERGENCES_BUILD_APP)
     add_executable(emergences main.cpp BoidsApp.cpp LiveBoids.cpp RenderPreview.cpp)
+    if(WIN32)
+        set_target_properties(emergences PROPERTIES WIN32_EXECUTABLE TRUE)
+        target_link_libraries(emergences PRIVATE user32)
+        if(MSVC)
+            # Retain normal main/argv and CRT initialization with the GUI subsystem.
+            target_link_options(emergences PRIVATE /ENTRY:mainCRTStartup)
+        endif()
+    endif()
     target_link_libraries(emergences PRIVATE emergences::core emergences::boids emergences::imgui)
     target_compile_definitions(emergences PRIVATE
         EMERGENCES_VERSION="${PROJECT_VERSION}"

@@ -31,6 +31,7 @@ namespace emergences::scenarios::boids {
 namespace {
 
 struct Controls {
+    bool panelVisible = true;
     int shape = 0;
     int color = 0;
     float size = 0.45F;
@@ -65,13 +66,17 @@ bool slider(const char* label, float& value, float minimum, float maximum) {
 }
 
 Actions drawPanel(BoidsScene& scene, Controls& controls, core::Camera& camera,
-                  const core::Context& context, const core::FrameRenderer& renderer) {
+                  const core::Context& context, const core::FrameRenderer& renderer,
+                  bool& fullscreen) {
     Actions actions;
     ImGui::SetNextWindowPos(ImVec2(18, 18), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(350, std::max(180.0F,
         std::min(690.0F, ImGui::GetIO().DisplaySize.y - 36.0F))), ImGuiCond_Always);
     ImGui::Begin("Emergences | Boids", nullptr, ImGuiWindowFlags_NoResize);
     ImGui::TextColored(ImVec4(0.3F, 0.8F, 0.95F, 1.0F), "PHASE 4 / LIVE BOIDS");
+    ImGui::Checkbox("Fullscreen (F11)", &fullscreen);
+    ImGui::SameLine();
+    ImGui::TextDisabled("F1: hide panel");
     if (ImGui::BeginCombo("Backend", scene.backend() == sim::Backend::CPU ? "CPU" : "GPU compute")) {
         for (const auto backend : {sim::Backend::CPU, sim::Backend::GPU}) {
             ImGui::BeginDisabled(backend == sim::Backend::GPU && scene.gpuSimulation() == nullptr);
@@ -433,6 +438,7 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
             if (anySmokeTest && now >= deadline) throw std::runtime_error("Boids smoke test timed out");
             if (anySmokeTest) controls.antialiasing = (presentedFrames >= 2 && presentedFrames < 16) || presentedFrames >= 20;
             renderer.setAntialiasing(controls.antialiasing);
+            bool fullscreen = window.isFullscreen();
             const bool presented = renderer.drawFrame(
                 [&](VkRenderPass pass, std::uint32_t imageCount) {
                     particles.configure(pass, renderer.sampleCount());
@@ -440,8 +446,21 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
                     ui.configure(pass, imageCount, renderer.sampleCount());
                 },
                 [&](VkCommandBuffer commands, VkExtent2D extent, std::size_t frame) {
-                    ui.beginFrame();
                     if (anySmokeTest) {
+                        if (presentedFrames == 10 || presentedFrames == 11 || presentedFrames == 14)
+                            ImGui::GetIO().AddKeyEvent(ImGuiKey_F1, true);
+                        if (presentedFrames == 12 || presentedFrames == 15)
+                            ImGui::GetIO().AddKeyEvent(ImGuiKey_F1, false);
+                    }
+                    ui.beginFrame();
+                    bool panelJustShown = false;
+                    if (ImGui::IsKeyPressed(ImGuiKey_F1, false)) {
+                        controls.panelVisible = !controls.panelVisible;
+                        panelJustShown = controls.panelVisible;
+                    }
+                    if (anySmokeTest) {
+                        require(controls.panelVisible == (presentedFrames < 10 || presentedFrames >= 14),
+                                "F1 must hide and restore the panel without repeating while held");
                         require(renderer.sampleCount() == (controls.antialiasing
                             ? renderer.supportedAntialiasingSampleCount() : VK_SAMPLE_COUNT_1_BIT),
                             "Boids MSAA toggle did not select the expected sample count");
@@ -449,20 +468,27 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
                     Actions actions;
                     if (smokeTest) smokeSettings(presentedFrames, scene, controls, camera, actions);
                     if (gpuSmokeTest) gpuSmokeSettings(presentedFrames, scene, controls, actions);
-                    const auto panelActions = drawPanel(scene, controls, camera, context, renderer);
-                    actions.reset |= panelActions.reset;
-                    actions.step |= panelActions.step;
-                    actions.skipElapsed |= panelActions.skipElapsed;
+                    if (controls.panelVisible) {
+                        const auto panelActions = drawPanel(scene, controls, camera, context, renderer, fullscreen);
+                        actions.reset |= panelActions.reset;
+                        actions.step |= panelActions.step;
+                        actions.skipElapsed |= panelActions.skipElapsed;
+                    }
+                    // Exercise the same deferred fullscreen request as the checkbox.
+                    if (anySmokeTest && presentedFrames == 16) fullscreen = true;
+                    if (anySmokeTest && presentedFrames == 20) fullscreen = false;
                     const auto& io = ImGui::GetIO();
+                    // Capture is computed before this frame's windows are drawn.
+                    const bool mouseCaptured = panelJustShown || (controls.panelVisible && ui.wantsMouse());
                     const bool cameraInput = ImGui::IsMouseDown(ImGuiMouseButton_Left) ||
                         ImGui::IsMouseDown(ImGuiMouseButton_Middle) || ui.wheelDelta() != 0.0F;
-                    if (!ui.wantsMouse() && !anySmokeTest) {
+                    if (!mouseCaptured && !anySmokeTest) {
                         if (ImGui::IsMouseDragging(ImGuiMouseButton_Left)) camera.orbit(io.MouseDelta.x, io.MouseDelta.y);
                         if (ImGui::IsMouseDragging(ImGuiMouseButton_Middle)) camera.pan(io.MouseDelta.x, io.MouseDelta.y, io.DisplaySize.y);
                         camera.zoom(ui.wheelDelta());
                     }
                     const float aspect = static_cast<float>(extent.width) / static_cast<float>(extent.height);
-                    const bool inputAllowed = !ui.wantsMouse() && !cameraInput &&
+                    const bool inputAllowed = !mouseCaptured && !cameraInput &&
                         ImGui::IsMousePosValid() && glfwGetWindowAttrib(window.nativeHandle(), GLFW_HOVERED) &&
                         glfwGetWindowAttrib(window.nativeHandle(), GLFW_FOCUSED);
                     const auto target = cursorTarget(camera, scene.currentSimulation().world(), controls,
@@ -568,6 +594,10 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
                     view.options = {controls.size, static_cast<float>(controls.shape), 0.0F, 0.0F};
                     if (target) drawCursor(*target, controls, view.viewProjection);
                     ui.endFrame();
+                    if (anySmokeTest && !controls.panelVisible) {
+                        require(ImGui::GetDrawData()->TotalVtxCount == 0,
+                                "Hidden controls must not leave UI draw commands");
+                    }
                     lines.draw(commands, view, controls.grid, controls.bounds);
                     if (scene.backend() == sim::Backend::GPU) {
                         const auto buffer = scene.gpuSimulation()->renderBuffer();
@@ -578,6 +608,12 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
                     }
                     ui.record(commands);
                 });
+            // Finish submitting the current frame before changing the native surface.
+            if (fullscreen != window.isFullscreen()) window.setFullscreen(fullscreen);
+            if (anySmokeTest && presented) {
+                require(window.isFullscreen() == (presentedFrames >= 16 && presentedFrames < 20),
+                        "Fullscreen request did not change the window mode");
+            }
             if (!presented) {
                 window.waitEvents();
                 previous = std::chrono::steady_clock::now();
@@ -602,14 +638,14 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
                 "Boids smoke test closed before all checks completed");
         std::cout << "Boids smoke test passed: " << presentedFrames << " presented frames, "
                   << generations << " swapchain generations, counts 0/1/257/4096/96/512/2048, "
-                     "fixed steps/pause/reset/rules/limits/boundaries/colors/cursor/dense budget/MSAA toggles, 0 validation errors.\n";
+                     "fixed steps/pause/reset/rules/limits/boundaries/colors/cursor/dense budget/MSAA/fullscreen/F1 panel, 0 validation errors.\n";
     }
     if (gpuSmokeTest) {
         require(presentedFrames >= 48 && generations >= 3 && observedGpuMotion,
                 "GPU Boids smoke test closed before all checks completed");
         std::cout << "GPU Boids smoke test passed: " << presentedFrames << " frames, " << generations
                   << " swapchain generations, CPU/GPU switches, 0/1/257/100000 agents, pause/step/reset, "
-                     "colors/boundaries/MSAA, zero-copy rendering, 0 validation errors.\n";
+                     "colors/boundaries/MSAA/fullscreen/F1 panel, zero-copy rendering, 0 validation errors.\n";
     }
     return 0;
 }

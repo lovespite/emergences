@@ -1,7 +1,9 @@
+#include <cstdio>
 #include <exception>
 #include <filesystem>
 #include <iostream>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -12,6 +14,45 @@
 #include "scenarios/boids/BoidsApp.h"
 
 namespace {
+
+#if defined(_WIN32)
+bool hasOutputHandle(HANDLE handle) {
+    if (handle == nullptr || handle == INVALID_HANDLE_VALUE) return false;
+    SetLastError(ERROR_SUCCESS);
+    return GetFileType(handle) != FILE_TYPE_UNKNOWN || GetLastError() == ERROR_SUCCESS;
+}
+
+void connectConsoleStream(FILE* stream, DWORD standardHandle, HANDLE inheritedHandle) {
+    if (hasOutputHandle(inheritedHandle)) {
+        // AttachConsole can replace process handles. Keep redirected output (e.g.
+        // CTest pipes) and its already initialized C runtime stream intact.
+        SetStdHandle(standardHandle, inheritedHandle);
+        return;
+    }
+#if defined(_MSC_VER)
+    FILE* reopened = nullptr;
+    (void)freopen_s(&reopened, "CONOUT$", "w", stream);
+#else
+    (void)std::freopen("CONOUT$", "w", stream);
+#endif
+}
+
+void connectParentConsole() {
+    const auto output = GetStdHandle(STD_OUTPUT_HANDLE);
+    const auto error = GetStdHandle(STD_ERROR_HANDLE);
+    const bool hasOutput = hasOutputHandle(output);
+    const bool hasError = hasOutputHandle(error);
+    if (hasOutput && hasError) return;
+
+    // The GUI subsystem never creates a console. Reuse a caller's existing
+    // terminal when available, while Explorer launches stay window-only.
+    if (!AttachConsole(ATTACH_PARENT_PROCESS)) return;
+    connectConsoleStream(stdout, STD_OUTPUT_HANDLE, hasOutput ? output : nullptr);
+    connectConsoleStream(stderr, STD_ERROR_HANDLE, hasError ? error : nullptr);
+    std::cout.clear();
+    std::cerr.clear();
+}
+#endif
 
 std::filesystem::path shaderDirectory() {
 #if defined(_WIN32)
@@ -38,6 +79,9 @@ std::filesystem::path shaderDirectory() {
 } // namespace
 
 int main(int argc, char** argv) {
+#if defined(_WIN32)
+    connectParentConsole();
+#endif
     bool smokeTest = false;
     bool renderSmokeTest = false;
     bool boidsSmokeTest = false;
@@ -53,7 +97,8 @@ int main(int argc, char** argv) {
                          "  --gpu-smoke-test  Verify GPU Boids rendering and CPU/GPU state transfers.\n"
                          "  --render-preview  Show the procedural renderer preview.\n"
                          "  --version     Print the application version.\n"
-                         "No options: interactive GPU Boids with CPU/GPU backend selection (Phase 4).\n";
+                         "No options: interactive GPU Boids with CPU/GPU backend selection (Phase 4).\n"
+                         "Controls: F11 toggles fullscreen; F1 shows/hides the control panel; Escape closes.\n";
             return 0;
         }
         if (argument == "--version") {
@@ -88,7 +133,13 @@ int main(int argc, char** argv) {
         if (renderSmokeTest || renderPreview) return app.runPreview(shaderDirectory(), renderSmokeTest);
         return app.run(shaderDirectory(), boidsSmokeTest, gpuSmokeTest);
     } catch (const std::exception& error) {
-        std::cerr << "Application failed: " << error.what() << '\n';
+        const std::string message = std::string{"Application failed: "} + error.what();
+        std::cerr << message << '\n';
+#if defined(_WIN32)
+        if (!std::cerr && !(smokeTest || renderSmokeTest || boidsSmokeTest || gpuSmokeTest)) {
+            MessageBoxA(nullptr, message.c_str(), "emergences", MB_OK | MB_ICONERROR);
+        }
+#endif
         return 1;
     }
 }

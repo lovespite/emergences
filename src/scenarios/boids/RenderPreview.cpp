@@ -17,6 +17,7 @@
 namespace emergences::scenarios::boids {
 namespace {
 struct Preview {
+    bool panelVisible = true;
     int count = 2048;
     int mode = 0;
     int colorMode = 0;
@@ -56,11 +57,14 @@ struct Preview {
 };
 
 void drawPanel(Preview& preview, core::Camera& camera, const core::Context& context,
-               const core::FrameRenderer& renderer) {
+               const core::FrameRenderer& renderer, bool& fullscreen) {
     ImGui::SetNextWindowPos(ImVec2(18, 18), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(310, 0), ImGuiCond_Always);
     ImGui::Begin("Emergences", nullptr, ImGuiWindowFlags_NoResize);
     ImGui::TextColored(ImVec4(0.3F, 0.8F, 0.95F, 1.0F), "PHASE 1 / RENDERING PREVIEW");
+    ImGui::Checkbox("Fullscreen (F11)", &fullscreen);
+    ImGui::SameLine();
+    ImGui::TextDisabled("F1: hide panel");
     ImGui::TextWrapped("Procedural particles for renderer verification. Boids simulation is the next stage.");
     ImGui::Separator();
     ImGui::SliderInt("Particles", &preview.count, 0, 20000);
@@ -145,6 +149,7 @@ int BoidsApp::runPreview(const std::filesystem::path& shaderDirectory, bool smok
             if (smokeTest && now >= deadline) throw std::runtime_error("Particle smoke test timed out");
             if (smokeTest) preview.antialiasing = (presentedFrames >= 2 && presentedFrames < 16) || presentedFrames >= 20;
             renderer.setAntialiasing(preview.antialiasing);
+            bool fullscreen = window.isFullscreen();
             const bool presented = renderer.drawFrame(
                 [&](VkRenderPass pass, std::uint32_t imageCount) {
                     particles.configure(pass, renderer.sampleCount());
@@ -152,14 +157,30 @@ int BoidsApp::runPreview(const std::filesystem::path& shaderDirectory, bool smok
                     ui.configure(pass, imageCount, renderer.sampleCount());
                 },
                 [&](VkCommandBuffer commands, VkExtent2D extent, std::size_t frame) {
+                    if (smokeTest) {
+                        if (presentedFrames == 10 || presentedFrames == 11 || presentedFrames == 14)
+                            ImGui::GetIO().AddKeyEvent(ImGuiKey_F1, true);
+                        if (presentedFrames == 12 || presentedFrames == 15)
+                            ImGui::GetIO().AddKeyEvent(ImGuiKey_F1, false);
+                    }
                     ui.beginFrame();
+                    bool panelJustShown = false;
+                    if (ImGui::IsKeyPressed(ImGuiKey_F1, false)) {
+                        preview.panelVisible = !preview.panelVisible;
+                        panelJustShown = preview.panelVisible;
+                    }
+                    if (smokeTest && preview.panelVisible != (presentedFrames < 10 || presentedFrames >= 14)) {
+                        throw std::runtime_error("F1 must hide and restore the panel without repeating while held");
+                    }
                     if (smokeTest && renderer.sampleCount() != (preview.antialiasing
                             ? renderer.supportedAntialiasingSampleCount() : VK_SAMPLE_COUNT_1_BIT)) {
                         throw std::runtime_error("Particle MSAA toggle did not select the expected sample count");
                     }
                     if (smokeTest) smokeSettings(presentedFrames, preview, camera);
-                    drawPanel(preview, camera, context, renderer);
-                    if (!ui.wantsMouse()) {
+                    if (preview.panelVisible) drawPanel(preview, camera, context, renderer, fullscreen);
+                    if (smokeTest && presentedFrames == 16) fullscreen = true;
+                    if (smokeTest && presentedFrames == 20) fullscreen = false;
+                    if (!panelJustShown && (!preview.panelVisible || !ui.wantsMouse())) {
                         const auto& io = ImGui::GetIO();
                         if (ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
                             camera.orbit(io.MouseDelta.x, io.MouseDelta.y);
@@ -181,10 +202,18 @@ int BoidsApp::runPreview(const std::filesystem::path& shaderDirectory, bool smok
                     view.up = glm::vec4(camera.up(), 0.0F);
                     view.options = {preview.scale, static_cast<float>(preview.mode), 0.0F, 0.0F};
                     ui.endFrame();
+                    if (smokeTest && !preview.panelVisible && ImGui::GetDrawData()->TotalVtxCount != 0) {
+                        throw std::runtime_error("Hidden controls must not leave UI draw commands");
+                    }
                     lines.draw(commands, view, preview.grid, preview.bounds);
                     particles.draw(commands, frame, preview.particles, view);
                     ui.record(commands);
                 });
+            // Finish submitting the current frame before changing the native surface.
+            if (fullscreen != window.isFullscreen()) window.setFullscreen(fullscreen);
+            if (smokeTest && presented && window.isFullscreen() != (presentedFrames >= 16 && presentedFrames < 20)) {
+                throw std::runtime_error("Fullscreen request did not change the window mode");
+            }
             if (!presented) { window.waitEvents(); continue; }
             ++presentedFrames;
             if (smokeTest) {
@@ -206,7 +235,7 @@ int BoidsApp::runPreview(const std::filesystem::path& shaderDirectory, bool smok
         }
         std::cout << "Particle smoke test passed: " << presentedFrames << " presented frames, "
                   << generations << " swapchain generations, counts 0/1/257/8192/96/2048, "
-                     "arrows/dots, camera/grid/UI, MSAA toggles, 0 validation errors.\n";
+                     "arrows/dots, camera/grid/UI, MSAA/fullscreen/F1 panel, 0 validation errors.\n";
     }
     return 0;
 }
