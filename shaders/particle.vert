@@ -20,7 +20,9 @@ void main() {
     vec2 velocity = vec2(dot(p.velocity, view.right.xyz), dot(p.velocity, view.up.xyz));
     vec2 forward = dot(velocity, velocity) > 1e-8 ? normalize(velocity) : vec2(0.0, 1.0);
     vec2 side = vec2(forward.y, -forward.x);
-    const vec2 arrow[3] = vec2[](vec2(0.0, 1.0), vec2(-0.45, -0.65), vec2(0.45, -0.65));
+    // Two triangles form a wide arrowhead with a recessed center at the tail.
+    const vec2 arrow[6] = vec2[](vec2(0.0, 1.0), vec2(-0.9, -0.65), vec2(0.0, -0.15),
+                                vec2(0.0, 1.0), vec2(0.0, -0.15), vec2(0.9, -0.65));
     const vec2 quad[6] = vec2[](vec2(-1,-1),vec2(1,-1),vec2(1,1),
                                vec2(-1,-1),vec2(1,1),vec2(-1,1));
     dotMode = view.options.y > 0.5 ? 1 : 0;

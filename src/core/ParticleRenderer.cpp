@@ -63,7 +63,7 @@ void ParticleRenderer::draw(VkCommandBuffer commands, std::size_t frame,
                             0, 1, &set, 0, nullptr);
     vkCmdPushConstants(commands, pipeline_->layout(), VK_SHADER_STAGE_VERTEX_BIT,
                         0, sizeof(view), &view);
-    vkCmdDraw(commands, view.options.y > 0.5F ? 6 : 3,
+    vkCmdDraw(commands, 6,
               static_cast<std::uint32_t>(particles.size()), 0, 0);
 }
 } // namespace emergences::core
