@@ -139,6 +139,11 @@ private:
     std::vector<std::uint8_t> carryingFood_;
     std::vector<float> headings_;
     std::vector<float> trailStrength_;
+    struct Escape {
+        float heading{0.0F};
+        float secondsRemaining{0.0F};
+    };
+    std::vector<Escape> escapes_;
     std::vector<FoodSource> foodSources_;
     std::vector<Enemy> enemies_;
     std::vector<float> enemyHeadings_;

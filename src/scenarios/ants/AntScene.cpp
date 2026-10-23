@@ -18,6 +18,8 @@ constexpr float CellSize = 2.0F * AntScene::WorldHalfExtent /
                            static_cast<float>(AntScene::GridResolution - 1);
 constexpr glm::vec3 SearchingColor{0.90F, 0.70F, 0.35F};
 constexpr glm::vec3 CarryingColor{0.35F, 1.0F, 0.45F};
+constexpr float EnemyAvoidanceMargin = 5.0F;
+constexpr float EscapeDuration = 2.0F;
 
 void validateCount(std::size_t count) {
     if (count > AntScene::MaxAnts) {
@@ -196,6 +198,7 @@ void AntScene::reset() {
     carryingFood_.assign(agents_.size(), 0);
     headings_.resize(agents_.size());
     trailStrength_.assign(agents_.size(), 1.0F);
+    escapes_.assign(agents_.size(), {});
     for (std::size_t index = 0; index < agents_.size(); ++index) {
         const float heading = random(-Pi, Pi);
         const float radius = std::sqrt(random(0.0F, 1.0F)) * nestRadius() * 0.85F;
@@ -664,73 +667,86 @@ void AntScene::step() {
         }
 
         const float headingBeforeSensing = heading;
-        const auto& targetField = carrying != 0 ? homePheromone_ : foodPheromone_;
-        const auto sense = [&](float sensorHeading) {
-            const auto target = ant.position + direction(sensorHeading) * parameters_.sensorDistance;
-            return clearPath(ant.position, target) ? sampleField(targetField, target) : 0.0F;
-        };
-        const float left = sense(heading - parameters_.sensorAngle);
-        const float forward = sense(heading);
-        const float right = sense(heading + parameters_.sensorAngle);
-        float sensedHeading = heading;
-        if (left > forward + 1.0e-5F && left > right + 1.0e-5F) {
-            sensedHeading -= maximumTurn;
-        } else if (right > forward + 1.0e-5F && right > left + 1.0e-5F) {
-            sensedHeading += maximumTurn;
-        } else if (forward < 1.0e-4F || std::abs(left - right) < 1.0e-5F) {
-            sensedHeading += noise(seed_, ant.id, totalSteps_) * parameters_.wander * StepSeconds;
-        }
-        heading = sensedHeading;
-
-        if (carrying != 0) {
-            // A path integration bias keeps a carrier headed home when a trail
-            // is weak or broken, while local sensors still influence its route.
-            const auto homeDirection = glm::normalize(-ant.position);
-            const auto desired = homeDirection + direction(sensedHeading) * 0.45F;
-            heading = turnToward(headingBeforeSensing, angle(desired), maximumTurn);
-        } else {
-            FoodSource* nearest = nullptr;
-            float nearestDistanceSquared = foodDetection * foodDetection;
-            for (auto& food : foodSources_) {
-                if (food.remaining == 0) {
-                    continue;
-                }
-                const auto delta = food.position - ant.position;
-                const float distanceSquared = glm::dot(delta, delta);
-                if (distanceSquared < nearestDistanceSquared && clearPath(ant.position, food.position, AntRadius)) {
-                    nearest = &food;
-                    nearestDistanceSquared = distanceSquared;
-                }
-            }
-            if (nearest != nullptr) {
-                if (nearestDistanceSquared <= nearest->radius * nearest->radius) {
-                    --nearest->remaining;
-                    carrying = 1;
-                    strength = 1.0F;
-                    heading += Pi;
-                } else {
-                    heading = turnToward(headingBeforeSensing, angle(nearest->position - ant.position), maximumTurn);
-                }
-            }
-        }
-
+        auto& escape = escapes_[index];
         glm::vec3 avoidance{0.0F};
+        float nearestThreatDistance = std::numeric_limits<float>::infinity();
+        glm::vec3 nearestThreatDirection{0.0F};
         for (const auto& enemy : enemies_) {
             auto away = ant.position - enemy.position;
             const float distance = glm::length(away);
-            const float detection = enemy.radius + 5.0F;
+            const float detection = enemy.radius + EnemyAvoidanceMargin;
             if (distance < detection) {
-                if (distance < 1.0e-4F) {
-                    away = direction(heading + Pi);
-                } else {
-                    away /= distance;
-                }
+                away = distance < 1.0e-4F ? direction(heading) : away / distance;
                 avoidance += away * (detection - distance);
+                if (distance < nearestThreatDistance) {
+                    nearestThreatDistance = distance;
+                    nearestThreatDirection = away;
+                }
             }
         }
-        if (glm::dot(avoidance, avoidance) > 1.0e-6F) {
-            heading = turnToward(heading, angle(avoidance), std::max(maximumTurn * 3.0F,
-                                                                     6.0F * StepSeconds));
+        if (std::isfinite(nearestThreatDistance)) {
+            // Opposing threats can cancel their sum; still leave the closest one.
+            escape.heading = angle(glm::dot(avoidance, avoidance) > 1.0e-6F
+                                       ? avoidance : nearestThreatDirection);
+            escape.secondsRemaining = EscapeDuration;
+        }
+        const bool escaping = escape.secondsRemaining > 0.0F;
+        if (escaping) {
+            // Keep going after crossing the danger boundary. Resuming attraction
+            // immediately traps ants in a ring around an occupied food source.
+            heading = turnToward(headingBeforeSensing, escape.heading,
+                                 std::max(maximumTurn * 3.0F, 6.0F * StepSeconds));
+            escape.secondsRemaining = std::max(0.0F, escape.secondsRemaining - StepSeconds);
+        } else {
+            const auto& targetField = carrying != 0 ? homePheromone_ : foodPheromone_;
+            const auto sense = [&](float sensorHeading) {
+                const auto target = ant.position + direction(sensorHeading) * parameters_.sensorDistance;
+                return clearPath(ant.position, target) ? sampleField(targetField, target) : 0.0F;
+            };
+            const float left = sense(heading - parameters_.sensorAngle);
+            const float forward = sense(heading);
+            const float right = sense(heading + parameters_.sensorAngle);
+            float sensedHeading = heading;
+            if (left > forward + 1.0e-5F && left > right + 1.0e-5F) {
+                sensedHeading -= maximumTurn;
+            } else if (right > forward + 1.0e-5F && right > left + 1.0e-5F) {
+                sensedHeading += maximumTurn;
+            } else if (forward < 1.0e-4F || std::abs(left - right) < 1.0e-5F) {
+                sensedHeading += noise(seed_, ant.id, totalSteps_) * parameters_.wander * StepSeconds;
+            }
+            heading = sensedHeading;
+
+            if (carrying != 0) {
+                // A path integration bias keeps a carrier headed home when a trail
+                // is weak or broken, while local sensors still influence its route.
+                const auto homeDirection = glm::normalize(-ant.position);
+                const auto desired = homeDirection + direction(sensedHeading) * 0.45F;
+                heading = turnToward(headingBeforeSensing, angle(desired), maximumTurn);
+            } else {
+                FoodSource* nearest = nullptr;
+                float nearestDistanceSquared = foodDetection * foodDetection;
+                for (auto& food : foodSources_) {
+                    if (food.remaining == 0) {
+                        continue;
+                    }
+                    const auto delta = food.position - ant.position;
+                    const float distanceSquared = glm::dot(delta, delta);
+                    if (distanceSquared < nearestDistanceSquared && clearPath(ant.position, food.position, AntRadius)) {
+                        nearest = &food;
+                        nearestDistanceSquared = distanceSquared;
+                    }
+                }
+                if (nearest != nullptr) {
+                    if (nearestDistanceSquared <= nearest->radius * nearest->radius) {
+                        --nearest->remaining;
+                        carrying = 1;
+                        strength = 1.0F;
+                        heading += Pi;
+                    } else {
+                        heading = turnToward(headingBeforeSensing, angle(nearest->position - ant.position), maximumTurn);
+                    }
+                }
+            }
         }
         heading = avoidTerrain(ant.position, heading, AntRadius, parameters_.speed, maximumTurn, ant.id);
         ant.velocity = direction(heading) * parameters_.speed;
@@ -743,8 +759,11 @@ void AntScene::step() {
         }
         ant.color = carrying != 0 ? CarryingColor : SearchingColor;
         strength *= trailDecay;
-        deposit(carrying != 0 ? foodPheromone_ : homePheromone_, ant.position,
-                parameters_.depositRate * StepSeconds * strength);
+        // Detours taken while fleeing do not advertise a useful foraging route.
+        if (!escaping) {
+            deposit(carrying != 0 ? foodPheromone_ : homePheromone_, ant.position,
+                    parameters_.depositRate * StepSeconds * strength);
+        }
     }
 }
 

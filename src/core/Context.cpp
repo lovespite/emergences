@@ -54,6 +54,24 @@ bool hasExtension(const std::vector<VkExtensionProperties>& available, const cha
     });
 }
 
+std::optional<VkPhysicalDeviceDriverPropertiesKHR> queryDriverProperties(
+    VkPhysicalDevice device, PFN_vkGetPhysicalDeviceProperties2KHR getProperties2,
+    const std::vector<VkExtensionProperties>& availableExtensions) {
+    // With a Vulkan 1.0 instance, use the advertised device extension rather
+    // than assuming that a newer device version permits core 1.2 queries.
+    if (getProperties2 == nullptr ||
+        !hasExtension(availableExtensions, VK_KHR_DRIVER_PROPERTIES_EXTENSION_NAME)) {
+        return std::nullopt;
+    }
+    VkPhysicalDeviceDriverPropertiesKHR driver{};
+    driver.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES_KHR;
+    VkPhysicalDeviceProperties2KHR properties{};
+    properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2_KHR;
+    properties.pNext = &driver;
+    getProperties2(device, &properties);
+    return driver;
+}
+
 #if defined(EMERGENCES_ENABLE_VALIDATION)
 VKAPI_ATTR VkBool32 VKAPI_CALL validationCallback(
     VkDebugUtilsMessageSeverityFlagBitsEXT severity,
@@ -164,6 +182,19 @@ void Context::createInstance() {
         }
     }
 
+    // The application uses Vulkan 1.0, so portability_subset needs this extension
+    // even when the loader and physical device support newer core versions.
+    const bool hasProperties2 = hasExtension(
+        availableExtensions, VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
+    if (hasProperties2) {
+        extensions.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
+    }
+    const bool hasPortabilityEnumeration = hasProperties2 && hasExtension(
+        availableExtensions, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+    if (hasPortabilityEnumeration) {
+        extensions.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+    }
+
     std::vector<const char*> layers;
 #if defined(EMERGENCES_ENABLE_VALIDATION)
     constexpr const char* validationLayer = "VK_LAYER_KHRONOS_validation";
@@ -197,6 +228,9 @@ void Context::createInstance() {
 
     VkInstanceCreateInfo info{};
     info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    if (hasPortabilityEnumeration) {
+        info.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+    }
     info.pApplicationInfo = &application;
     info.enabledExtensionCount = static_cast<std::uint32_t>(extensions.size());
     info.ppEnabledExtensionNames = extensions.data();
@@ -208,6 +242,10 @@ void Context::createInstance() {
     }
 #endif
     check(vkCreateInstance(&info, nullptr, &instance_), "Creating the Vulkan instance");
+    if (hasProperties2) {
+        getPhysicalDeviceProperties2_ = reinterpret_cast<PFN_vkGetPhysicalDeviceProperties2KHR>(
+            vkGetInstanceProcAddr(instance_, "vkGetPhysicalDeviceProperties2KHR"));
+    }
 
 #if defined(EMERGENCES_ENABLE_VALIDATION)
     validationEnabled_ = hasValidation;
@@ -254,8 +292,16 @@ void Context::selectPhysicalDevice() {
 
         VkPhysicalDeviceProperties properties{};
         vkGetPhysicalDeviceProperties(candidate, &properties);
-        const int score = properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? 100 :
-                          properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ? 10 : 1;
+        int score = properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? 100 :
+                    properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ? 10 : 1;
+#if defined(__APPLE__)
+        // Prefer the tested MoltenVK path when multiple macOS ICDs expose the
+        // same GPU. Explicit loader filtering (e.g. VK_DRIVER_FILES) still applies.
+        const auto driver = queryDriverProperties(candidate, getPhysicalDeviceProperties2_, extensions);
+        if (driver && driver->driverID == VK_DRIVER_ID_MOLTENVK) {
+            score += 1000;
+        }
+#endif
         if (score > bestScore) {
             physicalDevice_ = candidate;
             graphicsQueueFamily_ = *families.graphics;
@@ -285,16 +331,43 @@ void Context::createDevice() {
         queueInfos.push_back(queueInfo);
     }
 
-    constexpr const char* extensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+    const auto availableExtensions = enumerate<VkExtensionProperties>(
+        [this](auto* count, auto* data) {
+            return vkEnumerateDeviceExtensionProperties(physicalDevice_, nullptr, count, data);
+        }, "Enumerating device extensions");
+    std::vector<const char*> extensions{VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+    // This extension must be enabled whenever a device advertises it. Its name
+    // is usable without opting into the provisional portability feature APIs.
+    constexpr const char* portabilitySubset = "VK_KHR_portability_subset";
+    if (hasExtension(availableExtensions, portabilitySubset)) {
+        extensions.push_back(portabilitySubset);
+    }
     VkDeviceCreateInfo info{};
     info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     info.queueCreateInfoCount = static_cast<std::uint32_t>(queueInfos.size());
     info.pQueueCreateInfos = queueInfos.data();
-    info.enabledExtensionCount = 1;
-    info.ppEnabledExtensionNames = extensions;
+    info.enabledExtensionCount = static_cast<std::uint32_t>(extensions.size());
+    info.ppEnabledExtensionNames = extensions.data();
     check(vkCreateDevice(physicalDevice_, &info, nullptr, &device_), "Creating the Vulkan logical device");
     vkGetDeviceQueue(device_, graphicsQueueFamily_, 0, &graphicsQueue_);
     vkGetDeviceQueue(device_, presentQueueFamily_, 0, &presentQueue_);
+
+    VkPhysicalDeviceProperties properties{};
+    vkGetPhysicalDeviceProperties(physicalDevice_, &properties);
+    const auto driver = queryDriverProperties(physicalDevice_, getPhysicalDeviceProperties2_, availableExtensions);
+    if (driver && driver->driverName[0] != '\0') {
+        std::printf("Vulkan driver: %s (%s); driverVersion 0x%08x; Vulkan %u.%u.%u\n",
+                    driver->driverName, driver->driverInfo, properties.driverVersion,
+                    VK_VERSION_MAJOR(properties.apiVersion), VK_VERSION_MINOR(properties.apiVersion),
+                    VK_VERSION_PATCH(properties.apiVersion));
+    } else {
+        // driverVersion has a vendor-defined encoding, so retain its raw value.
+        std::printf("Vulkan driver: vendor 0x%04x, device 0x%04x; driverVersion 0x%08x; Vulkan %u.%u.%u\n",
+                    properties.vendorID, properties.deviceID, properties.driverVersion,
+                    VK_VERSION_MAJOR(properties.apiVersion), VK_VERSION_MINOR(properties.apiVersion),
+                    VK_VERSION_PATCH(properties.apiVersion));
+    }
+    std::fflush(stdout);
 }
 
 void Context::waitIdle() const { check(vkDeviceWaitIdle(device_), "Waiting for the Vulkan device"); }

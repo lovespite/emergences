@@ -682,6 +682,119 @@ void replenishmentReplayAndCapacity() {
             "Dropped frame time must not advance the food generation schedule");
 }
 
+// The scenes are owned and non-const; their borrowed views let these fixtures
+// isolate steering behavior without adding production-only editing controls.
+void prepareThreatFixture(AntScene& scene) {
+    scene.setObstacleCount(0);
+    auto parameters = scene.parameters();
+    parameters.wander = 0.0F;
+    parameters.depositRate = 0.0F;
+    parameters.diffusion = 0.0F;
+    parameters.evaporation = 0.0F;
+    parameters.foodSpawnInterval = 120.0F;
+    scene.setParameters(parameters);
+    for (const auto& food : scene.foodSources()) const_cast<FoodSource&>(food).remaining = 0;
+}
+
+void placeThreat(AntScene& scene, const glm::vec3& position) {
+    auto* enemies = const_cast<Enemy*>(scene.enemies().data());
+    for (std::size_t index = 0; index < scene.enemies().size(); ++index) {
+        enemies[index].position = index == 0 ? position : glm::vec3{-70.0F, 0.0F, -70.0F};
+        enemies[index].radius = 1.5F;
+    }
+}
+
+void attractToThreat(AntScene& scene, const glm::vec3& center) {
+    constexpr float spacing = 2.0F * AntScene::WorldHalfExtent /
+                              static_cast<float>(AntScene::GridResolution - 1);
+    auto* field = const_cast<float*>(scene.foodPheromone().data());
+    for (std::size_t z = 0; z < AntScene::GridResolution; ++z) {
+        for (std::size_t x = 0; x < AntScene::GridResolution; ++x) {
+            const glm::vec3 position{static_cast<float>(x) * spacing - AntScene::WorldHalfExtent,
+                                     0.0F,
+                                     static_cast<float>(z) * spacing - AntScene::WorldHalfExtent};
+            const auto delta = position - center;
+            field[z * AntScene::GridResolution + x] = 20.0F * std::exp(-glm::dot(delta, delta) / 200.0F);
+        }
+    }
+}
+
+void strongTrailsDoNotTrapAntsAroundEnemies() {
+    AntScene scene{64, 12345};
+    prepareThreatFixture(scene);
+    const glm::vec3 center{30.0F, 0.0F, 30.0F};
+    attractToThreat(scene, center);
+    auto* ants = const_cast<sim::Agent*>(scene.agents().data());
+    for (std::size_t index = 0; index < scene.count(); ++index) {
+        // Preserve the seeded heading and start each ant approaching the danger.
+        ants[index].position = center - glm::normalize(ants[index].velocity) * 7.5F;
+    }
+    std::vector<float> furthest(scene.count(), 0.0F);
+    for (int tick = 0; tick < 600; ++tick) {
+        // Pin the enemy before each step; its ordinary movement during the step
+        // is less than 0.03 units and cannot chase ants out of the fixture.
+        placeThreat(scene, center);
+        ticks(scene, 1);
+        for (std::size_t index = 0; index < scene.count(); ++index) {
+            furthest[index] = std::max(furthest[index], glm::length(ants[index].position - center));
+        }
+    }
+    require(std::all_of(furthest.begin(), furthest.end(), [](float distance) { return distance > 14.0F; }),
+            "Every ant must escape an enemy ring even when a persistent strong trail attracts it inward");
+}
+
+void escapePersistsThenForagingResumes() {
+    AntScene scene{1, 12345};
+    prepareThreatFixture(scene);
+    const glm::vec3 center{30.0F, 0.0F, 30.0F};
+    attractToThreat(scene, center);
+    auto& ant = const_cast<sim::Agent&>(scene.agents().front());
+    const auto outward = glm::normalize(ant.velocity);
+    ant.position = center + outward * 6.0F;
+    placeThreat(scene, center);
+    ticks(scene, 1);
+    const auto started = ant.position;
+    for (int tick = 0; tick < 120; ++tick) {
+        placeThreat(scene, {-70.0F, 0.0F, -70.0F});
+        ticks(scene, 1);
+    }
+    require(glm::dot(ant.position - started, outward) > 5.0F,
+            "After danger disappears, an ant must keep escaping instead of turning back toward its trail");
+
+    const glm::vec3 sideways{-outward.z, 0.0F, outward.x};
+    auto& food = const_cast<FoodSource&>(scene.foodSources().front());
+    food = {ant.position + outward * 6.0F + sideways * 3.0F, 1.6F, 5};
+    bool pickedUpFood = false;
+    for (int tick = 0; tick < 600 && !pickedUpFood; ++tick) {
+        placeThreat(scene, {-70.0F, 0.0F, -70.0F});
+        ticks(scene, 1);
+        pickedUpFood = scene.carryingFood().front() != 0;
+    }
+    require(pickedUpFood,
+            "A safe ant must resume seeking and collecting food after its escape interval ends");
+}
+
+void resetsDiscardEscapeHistory() {
+    AntScene scene{4, 12345};
+    prepareThreatFixture(scene);
+    for (const std::size_t count : {std::size_t{4}, std::size_t{6}}) {
+        auto& ant = const_cast<sim::Agent&>(scene.agents().front());
+        const glm::vec3 center{30.0F, 0.0F, 30.0F};
+        ant.position = center + glm::normalize(ant.velocity) * 6.0F;
+        placeThreat(scene, center);
+        ticks(scene, 1);
+        if (count == scene.count()) scene.reset();
+        else scene.setCount(count);
+
+        AntScene matching{count, scene.seed()};
+        matching.setObstacleCount(0);
+        matching.setParameters(scene.parameters());
+        ticks(scene, 120);
+        ticks(matching, 120);
+        requireSameState(state(matching), scene);
+    }
+}
+
 void foragingAndLongRunBounds() {
     AntScene scene{128, 42};
     const auto initialFood = remainingFood(scene);
@@ -721,6 +834,9 @@ int main() {
         pheromoneLifecycle();
         periodicFoodLifecycle();
         replenishmentReplayAndCapacity();
+        strongTrailsDoNotTrapAntsAroundEnemies();
+        escapePersistsThenForagingResumes();
+        resetsDiscardEscapeHistory();
         foragingAndLongRunBounds();
         std::cout << "Ant scene tests passed (seeded worlds, terrain, replay, controls, trails, food, and bounds)\n";
         return EXIT_SUCCESS;

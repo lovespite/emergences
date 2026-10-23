@@ -11,6 +11,28 @@
 - 构建应用时，需要完整的 LunarG Vulkan SDK，包括头文件、链接库和 `glslc`。显卡驱动附带的 Vulkan 运行时不足以编译项目。
 - 首次配置需要联网下载固定版本的 GLFW、GLM 和 Dear ImGui。依赖版本及缓存说明见 [third_party/README.md](third_party/README.md)。
 
+## macOS 26+ 构建与运行
+
+安装支持 C++20 的 Apple Command Line Tools / Xcode 及 macOS SDK、CMake ≥ 3.24、Ninja，以及 [LunarG macOS Vulkan SDK](https://vulkan.lunarg.com/doc/view/latest/mac/getting_started.html)（含 `glslc`、Vulkan Loader 和 MoltenVK）。本机使用 Apple Clang 21、macOS SDK 27.0 和 Vulkan SDK 1.4.363.0；构建时将最低运行系统设为 macOS 26.0。OpenMP 为可选依赖，未检测到支持时 CPU 模拟自动使用串行路径。
+
+在项目根目录运行；若 SDK 未安装到系统搜索路径，先执行其 `setup-env.sh`，例如 `source "$HOME/VulkanSDK/1.4.363.0/setup-env.sh"`（路径按实际安装版本调整）：
+
+```sh
+cmake -S . -B build/macos-check -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_DEPLOYMENT_TARGET=26.0
+cmake --build build/macos-check --parallel
+./build/macos-check/Release/emergences
+```
+
+macOS 默认优先选择可用的 MoltenVK，并启用所需的 portability 扩展；启动日志显示实际驱动。需要指定驱动时，可用 Vulkan Loader 的 `VK_DRIVER_FILES` 指向对应 ICD JSON，例如：
+
+```sh
+VK_DRIVER_FILES="$HOME/VulkanSDK/1.4.363.0/macOS/share/vulkan/icd.d/MoltenVK_icd.json" ./build/macos-check/Release/emergences
+```
+
+同目录的 `libkosmickrisp_icd.json` 可用于对照运行 KosmicKrisp。`VkResult -4` 表示运行时设备丢失（`VK_ERROR_DEVICE_LOST`）。本次优先 MoltenVK 是为了避开本机在 KosmicKrisp 下复现的 GPU 超时和设备丢失；这项对照尚不能单独证明根因属于驱动。
+
+macOS 本机验收（2026-10-23，M1 Pro / macOS 26.6.2 / MoltenVK 1.4.2）：Debug、Release 各 22/22 项测试通过，包含 GPU 计算对照、呈现和场景切换；Debug 设置 `VK_LAYER_VALIDATE_SYNC=1`，无校验诊断。26,540 个体的配置副本在原 KosmicKrisp 路径约 20 秒复现设备丢失；改用 MoltenVK 后，Debug 连续运行 65 秒、默认驱动选择的 Release 连续运行 120 秒均未退出，随后由检查脚本结束进程。此记录是有限时长的本机验证，不代表无限时长稳定性保证。日志位于 `build/macos-debug/verification.log`、`build/macos-check/verification.log` 和 `build/macos-check/verification-device-loss/`。
+
 ## 一键生成 Windows 可执行程序
 
 安装上述依赖，并在 Visual Studio 2022 / Build Tools 中安装“使用 C++ 的桌面开发”工作负载（含 Windows SDK）。将 CMake 加入 `PATH` 后，**双击项目根目录的 `build.bat`** 即可完成配置、编译和着色器生成，默认生成适合日常运行的 Release 版本：

@@ -44,6 +44,7 @@ private:
     void cleanup() noexcept;
 
     VkInstance instance_ = VK_NULL_HANDLE;
+    PFN_vkGetPhysicalDeviceProperties2KHR getPhysicalDeviceProperties2_ = nullptr;
     VkDebugUtilsMessengerEXT debugMessenger_ = VK_NULL_HANDLE;
     VkSurfaceKHR surface_ = VK_NULL_HANDLE;
     VkPhysicalDevice physicalDevice_ = VK_NULL_HANDLE;
