@@ -14,6 +14,7 @@ layout(push_constant) uniform View {
 layout(location = 0) out vec3 color;
 layout(location = 1) out vec2 localPosition;
 layout(location = 2) flat out int dotMode;
+layout(location = 3) flat out int shadedDot;
 
 void main() {
     Particle p = particles[gl_InstanceIndex];
@@ -26,6 +27,7 @@ void main() {
     const vec2 quad[6] = vec2[](vec2(-1,-1),vec2(1,-1),vec2(1,1),
                                vec2(-1,-1),vec2(1,1),vec2(-1,1));
     dotMode = int(view.options.y + 0.5);
+    shadedDot = int(view.options.z + 0.5);
     localPosition = dotMode != 0 ? quad[gl_VertexIndex] : arrow[gl_VertexIndex];
     vec2 offset = dotMode == 1 ? localPosition * 0.5 :
                   side * localPosition.x + forward * localPosition.y;

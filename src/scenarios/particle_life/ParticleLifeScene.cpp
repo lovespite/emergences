@@ -55,7 +55,7 @@ float radialForce(float distance, float attraction, float coreRatio, float repul
                                              (1.0F - coreRatio));
 }
 
-glm::vec3 overlapDirection(std::uint32_t receiver, std::uint32_t source) {
+glm::vec3 overlapDirection(std::uint32_t receiver, std::uint32_t source, bool threeDimensional) {
     // A stable, antisymmetric direction separates coincident particles without
     // introducing frame-dependent randomness or array-order bias.
     const std::uint32_t low = std::min(receiver, source);
@@ -64,6 +64,13 @@ glm::vec3 overlapDirection(std::uint32_t receiver, std::uint32_t source) {
     hash ^= hash >> 16U;
     hash *= 0x7FEB352DU;
     hash ^= hash >> 15U;
+    if (threeDimensional) {
+        constexpr std::array<glm::vec3, 6> directions{{
+            {1.0F, 0.0F, 0.0F}, {-1.0F, 0.0F, 0.0F},
+            {0.0F, 1.0F, 0.0F}, {0.0F, -1.0F, 0.0F},
+            {0.0F, 0.0F, 1.0F}, {0.0F, 0.0F, -1.0F}}};
+        return directions[hash % directions.size()] * (receiver < source ? 1.0F : -1.0F);
+    }
     constexpr float diagonal = 0.7071067811865475F;
     constexpr std::array<glm::vec3, 8> directions{{
         {1.0F, 0.0F, 0.0F}, {diagonal, 0.0F, diagonal}, {0.0F, 0.0F, 1.0F},
@@ -84,7 +91,7 @@ ParticleLifeScene::ParticleLifeScene(std::size_t count, std::uint32_t seed) : se
         auto& value = matrix_[index * MaxSpecies + index];
         value = 0.4F + 0.5F * std::abs(value);
     }
-    resetPopulation(count, speciesCount_, seed_);
+    resetPopulation(count, speciesCount_, seed_, threeDimensional_);
 }
 
 ParticleLifeScene::~ParticleLifeScene() = default;
@@ -128,6 +135,13 @@ std::vector<sim::Agent> ParticleLifeScene::readback() const {
     return backend_ == sim::Backend::GPU ? gpu_->readback() : agents_;
 }
 
+bool ParticleLifeScene::threeDimensional() const noexcept { return threeDimensional_; }
+void ParticleLifeScene::setThreeDimensional(bool enabled) {
+    if (enabled != threeDimensional_) {
+        resetPopulation(count(), speciesCount_, seed_, enabled);
+    }
+}
+
 const ParticleLifeParameters& ParticleLifeScene::parameters() const noexcept { return parameters_; }
 
 void ParticleLifeScene::setParameters(const ParticleLifeParameters& parameters) {
@@ -152,7 +166,7 @@ std::size_t ParticleLifeScene::count() const noexcept { return agents_.size(); }
 void ParticleLifeScene::setCount(std::size_t count) {
     validateCount(count);
     if (count != agents_.size()) {
-        resetPopulation(count, speciesCount_, seed_);
+        resetPopulation(count, speciesCount_, seed_, threeDimensional_);
     }
 }
 
@@ -162,13 +176,13 @@ void ParticleLifeScene::setSpeciesCount(std::size_t count) {
         throw std::invalid_argument("Particle life species count must be between one and eight");
     }
     if (count != speciesCount_) {
-        resetPopulation(agents_.size(), count, seed_);
+        resetPopulation(agents_.size(), count, seed_, threeDimensional_);
     }
 }
 
 std::uint32_t ParticleLifeScene::seed() const noexcept { return seed_; }
 void ParticleLifeScene::setSeed(std::uint32_t seed) {
-    resetPopulation(agents_.size(), speciesCount_, seed);
+    resetPopulation(agents_.size(), speciesCount_, seed, threeDimensional_);
 }
 
 void ParticleLifeScene::resetClock() noexcept {
@@ -178,11 +192,11 @@ void ParticleLifeScene::resetClock() noexcept {
 }
 
 void ParticleLifeScene::reset() {
-    resetPopulation(agents_.size(), speciesCount_, seed_);
+    resetPopulation(agents_.size(), speciesCount_, seed_, threeDimensional_);
 }
 
 void ParticleLifeScene::resetPopulation(std::size_t count, std::size_t speciesCount,
-                                       std::uint32_t seed) {
+                                       std::uint32_t seed, bool threeDimensional) {
     std::mt19937 generator{seed};
     std::vector<sim::Agent> nextAgents(count);
     std::vector<std::uint8_t> nextSpecies(count);
@@ -194,6 +208,9 @@ void ParticleLifeScene::resetPopulation(std::size_t count, std::size_t speciesCo
         agent.id = static_cast<std::uint32_t>(index);
         agent.position = {(unitRandom(generator) * 2.0F - 1.0F) * WorldHalfExtent,
                           0.0F, (unitRandom(generator) * 2.0F - 1.0F) * WorldHalfExtent};
+        if (threeDimensional) {
+            agent.position.y = (unitRandom(generator) * 2.0F - 1.0F) * WorldHalfExtent;
+        }
         agent.color = speciesColor(type);
         agent.size = 0.7F;
     }
@@ -203,6 +220,9 @@ void ParticleLifeScene::resetPopulation(std::size_t count, std::size_t speciesCo
     nextVelocities_.swap(nextVelocities);
     speciesCount_ = speciesCount;
     seed_ = seed;
+    threeDimensional_ = threeDimensional;
+    world_.minimum.y = threeDimensional ? -WorldHalfExtent : -1.0F;
+    world_.maximum.y = threeDimensional ? WorldHalfExtent : 1.0F;
     resetClock();
 }
 
@@ -306,7 +326,7 @@ void ParticleLifeScene::setAgents(std::span<const sim::Agent> agents,
     for (std::size_t index = 0; index < agents.size(); ++index) {
         const auto& agent = agents[index];
         if (species[index] >= speciesCount_ || !ids.insert(agent.id).second ||
-            agent.position.y != 0.0F || agent.velocity.y != 0.0F ||
+            (!threeDimensional_ && (agent.position.y != 0.0F || agent.velocity.y != 0.0F)) ||
             !std::isfinite(agent.size) || agent.size <= 0.0F || !std::isfinite(agent.reserved)) {
             throw std::invalid_argument("Invalid particle life particle metadata or nonplanar state");
         }
@@ -348,7 +368,7 @@ float ParticleLifeScene::interactionForce(float normalizedDistance, float attrac
 
 void ParticleLifeScene::step() {
     if (backend_ == sim::Backend::GPU) {
-        gpu_->step(StepSeconds, parameters_, matrix_);
+        gpu_->step(StepSeconds, parameters_, matrix_, threeDimensional_);
         return;
     }
     grid_.rebuild(agents_, world_, parameters_.interactionRadius);
@@ -362,7 +382,8 @@ void ParticleLifeScene::step() {
             const auto source = static_cast<std::size_t>(neighbor.agent - agents_.data());
             const float distance = static_cast<float>(std::sqrt(neighbor.distanceSquared));
             const auto direction = distance > 0.0F ? *neighbor.displacement / distance
-                                                  : overlapDirection(agents_[index].id, neighbor.agent->id);
+                                                  : overlapDirection(agents_[index].id, neighbor.agent->id,
+                                                                     threeDimensional_);
             const float force = radialForce(distance / parameters_.interactionRadius,
                 matrix_[species_[index] * MaxSpecies + species_[source]],
                 parameters_.coreRatio, parameters_.repulsion);

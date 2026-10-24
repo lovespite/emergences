@@ -126,33 +126,39 @@ cmake --build --preset debug
 
 ### Particle Life 场景
 
-在面板顶部选择 **Scene → Particle Life**，或以 `emergences --particle-life`（Windows 使用 `emergences.exe`）直接启动。默认 **2000 个粒子、6 个物种**，在 **100×100** 的 XZ 平面周期空间中运行，支持 0–10000 个粒子和 1–8 个物种。默认优先使用 **GPU compute**，初始化失败自动回退 CPU，并在面板显示原因；两种后端均使用 **120 Hz 固定步长**，复用现有圆点渲染、相机、抗锯齿和场景切换。
+在面板顶部选择 **Scene → Particle Life**，或以 `emergences --particle-life`（Windows 使用 `emergences.exe`）直接启动。使用 **`emergences --particle-life-3d`** 可直接进入 GPU 三维模拟；面板的 **Dimensions → 2D plane / 3D volume** 也可随时切换。默认 **2000 个粒子、6 个物种**，支持 0–10000 个粒子和 1–8 个物种。2D 使用 **100×100** 的 XZ 平面；3D 使用 **100×100×100** 的体积，粒子可沿三个方向运动，六个面均为周期边界，坐标范围为 **[-50,50)**。默认优先使用 **GPU compute**，初始化失败自动回退 CPU，并在面板显示原因；两种后端均使用 **120 Hz 固定步长**。
 
-CPU 通过空间哈希查询周期邻域；GPU 采用共享内存分块的全粒子对计算，按作用半径精确筛选，不截断邻居数量。GPU 状态直接交给 Vulkan 粒子渲染，无每帧状态回读。CPU / GPU 的浮点累计精度和顺序不同，数值验证采用容差，长期轨迹不保证逐位相同。
+CPU 通过空间哈希查询周期邻域；GPU 在显存中构建三维空间网格并查询相邻格子，按作用半径精确筛选，不截断邻居数量。2D 和 3D 均复用这一路径。粒子状态和邻域构建留在 GPU，状态缓冲直接交给 Vulkan 粒子渲染，无每帧状态回读；只有切换到 CPU 或显式测试才读取状态。CPU / GPU 的浮点累计精度和顺序不同，数值验证采用容差，长期轨迹不保证逐位相同。大量粒子挤入同一局部区域时，邻居数量仍可能显著增加。
+
+3D 默认使用斜视轨道相机和立方体边界，圆点增加球面明暗辅助判断深度。左键拖动旋转、中键拖动平移、滚轮缩放；**View → Reset camera** 恢复当前维度的视角，F1 可隐藏控制面板。同样数量的粒子放进体积后邻居更稀疏，因此 `--particle-life-3d` 在未保存作用半径时采用 **22**；已有半径会保留，面板 **Behavior → Use 3D starter radius (22)** 可主动应用这个起点。三维形态取决于密度和作用矩阵，旋转视角有助于观察团簇内部及前后关系。
 
 所有粒子在近距离互相排斥，避免塌缩；在其余作用半径内，物种矩阵决定吸引或排斥，强度随距离呈三角形变化，超出半径后不再作用。矩阵的**行是受力物种、列是施力物种**，正值吸引、负值排斥；矩阵不必对称，因此可以出现一个物种追逐另一个物种的运动。模型参考 [Particle Life 官方框架的力函数说明](https://particle-life.com/java-framework/getting-started.html)。默认矩阵保留同类吸引，便于观察聚集；具体形态会随参数和矩阵变化。
 
 - **Backend**：切换 CPU / GPU compute，保留粒子位置、速度、物种、规则矩阵、参数、暂停状态和已完成的模拟步数；切换仅丢弃不足一个固定步长的时间余量。
+- **Dimensions**：切换 2D / 3D 会按当前种子重新生成粒子并重置时间，保留后端、规则矩阵、参数和暂停状态，同时调整观察相机。
 - **Paused / Step / Reset**：暂停、单步、按当前种子恢复初始粒子；重置保留规则矩阵、参数和暂停状态。
 - 调整粒子数、物种数、种子，以及作用半径、作用强度、阻尼、近距排斥、核心距离比例和速度上限。数量、物种数和种子变化会重新生成粒子。
 - 彩色作用矩阵可逐格编辑，并可随机生成新的非对称规则；更改规则会作用于当前粒子。物种颜色同时用于矩阵和渲染。
 - 粒子大小、网格、边界、抗锯齿和相机均可调；切换到其他场景时冻结当前模拟，切回来继续。
 
-设置保存为 `app.scenario = particle_life` 和 `scenarios.particle_life.*`，包括所有 8×8 矩阵值；`scenarios.particle_life.backend = gpu`（默认）或 `cpu` 记忆后端偏好。初始化失败的自动回退不会覆盖 GPU 偏好，面板切换成功后才保存所选后端。重启恢复参数及规则，从种子重新生成初始粒子。呈现回归可使用 `emergences --particle-life-smoke-test`，覆盖 GPU 直接绘制、CPU / GPU 状态切换、粒子数量、物种数、矩阵修改、暂停／单步／重置、三个场景切换、帧预算、窗口大小、全屏、F1 和 MSAA。
+设置保存为 `app.scenario = particle_life` 和 `scenarios.particle_life.*`，包括所有 8×8 矩阵值；`scenarios.particle_life.dimensions = 2d`（默认）或 `3d` 记忆维度，`scenarios.particle_life.backend = gpu`（默认）或 `cpu` 记忆后端偏好。旧配置保持 2D。初始化失败的自动回退不会覆盖 GPU 偏好，面板切换成功后才保存所选后端；`--particle-life-3d` 明确选择 3D 和 GPU。重启恢复参数及规则，从种子重新生成初始粒子。呈现回归可使用 `emergences --particle-life-smoke-test`，覆盖 2D / 3D 往返切换、GPU 的 Y 方向运动与周期边界、GPU 直接绘制、CPU / GPU 状态切换、粒子数量、物种数、矩阵修改、暂停／单步／重置、三个场景切换、帧预算、窗口大小、全屏、F1 和 MSAA。
 
-本机 **Apple M1 Pro / MoltenVK / Release** 密集场景单步测量如下。使用合成的四个密集团簇，每次测量前恢复相同状态；预热一次后取五次中位数。GPU 耗时包含提交与同步等待，不含状态上传、回读或渲染；这些单步数据不能直接换算为应用帧率。
-
-| 粒子数 | CPU 单步 | GPU 单步 | 加速比 |
-| ---: | ---: | ---: | ---: |
-| 2000 | 12.797 ms | 2.881 ms | 4.442× |
-| 5000 | 80.123 ms | 10.389 ms | 7.712× |
-| 10000 | 317.104 ms | 16.682 ms | 19.009× |
-
-开启 `EMERGENCES_ENABLE_GPU_TESTS` 并构建 Release 后，可运行计算测试的基准模式（以下为本机单配置构建路径）：
+性能取决于粒子分布、作用半径和设备。开启 `EMERGENCES_ENABLE_GPU_TESTS` 并构建 Release 后，可运行计算测试的基准模式（以下为本机单配置构建路径）。GPU 单步耗时包含提交与同步等待，不含状态上传、回读或渲染，不能直接换算为应用帧率：
 
 ```sh
 build/macos-check/src/scenarios/boids/emergences_particle_life_gpu_tests --benchmark
 ```
+
+在 **Apple M1 Pro / MoltenVK 1.4.2 / Release** 上，3D 作用半径 **22** 的单步测量如下。每组运行六次，丢弃首轮预热，取后五次的中位数；每次测量恢复相同初态。
+
+| 3D 分布 | 粒子数 | CPU 单步 | GPU 单步 |
+| --- | ---: | ---: | ---: |
+| 均匀 | 2000 | 9.378 ms | 1.980 ms |
+| 均匀 | 10000 | 228.713 ms | 10.498 ms |
+| 密集 | 2000 | 16.610 ms | 4.827 ms |
+| 密集 | 10000 | 399.224 ms | 15.490 ms |
+
+GPU 耗时包含计算提交与同步等待，不含上传、回读和渲染。120 Hz 是模拟固定步长，不保证所有粒子数量与密度都能按实时速度完成每步；工作超出帧预算时会放慢模拟以保持控制响应。
 
 ### 配置文件与设置记忆
 
@@ -175,6 +181,7 @@ scenarios.ants.deposit_rate = 4
 scenarios.ants.show_home_pheromone = on
 scenarios.ants.show_food_pheromone = on
 scenarios.particle_life.backend = gpu
+scenarios.particle_life.dimensions = 3d
 scenarios.particle_life.count = 2000
 view.fullscreen = on
 view.agent_shape = arrow
@@ -354,7 +361,7 @@ ctest --test-dir build-host-x64 -C Release --output-on-failure
 | `vulkan_boids` | `--boids-smoke-test` 的真实模拟上传、控制状态、光标力、四种颜色和缩放路径 |
 | `vulkan_gpu_boids` | `--gpu-smoke-test` 的 GPU 直接绘制、0 / 1 / 257 / 100000 个体、后端切换、暂停 / 单步 / 重置、颜色、边界、缩放和 MSAA |
 | `vulkan_ants` | `--ants-smoke-test` 的蚁群 / 地形 / 食物 / 敌对生物 / 信息素绘制、数量、障碍碰撞范围显示、暂停 / 单步 / 重置、种子、预算与场景切换 |
-| `vulkan_particle_life` | `--particle-life-smoke-test` 的 GPU 直接绘制、CPU / GPU 切换、数量与物种、矩阵、种子、暂停 / 单步 / 重置、预算、场景切换与窗口控制 |
+| `vulkan_particle_life` | `--particle-life-smoke-test` 的 2D / 3D 往返切换、GPU Y 运动与周期边界、GPU 直接绘制、CPU / GPU 切换、数量与物种、矩阵、种子、暂停 / 单步 / 重置、预算、场景切换与窗口控制 |
 | `boids_gpu_compute` | 真实计算设备上的 CPU/GPU 规则对照、网格与边界、状态读回和十万个体计算检查 |
 | `particle_life_gpu_compute` | 真实计算设备上的 CPU / GPU 单步与连续步对照、周期边界、重合点、非对称矩阵、速度限制与状态切换；另提供 `--benchmark` 模式 |
 
@@ -372,7 +379,7 @@ ctest --test-dir build-host-x64 -C Release --output-on-failure
 | `src/scenarios/boids/` | 纯 CPU 的三规则、BoidsRuleKernel、BoidsScene、光标干预及测试；LiveBoids 管理 Boids / 蚁群 / Particle Life 切换并连接模拟 / 渲染 / 面板，保留程序化预览与呈现测试 |
 | `src/scenarios/ants/` | 无 Vulkan 依赖的 AntScene、双信息素场、随机地形、食物和敌对生物及测试；AntPresentation 负责蚁群面板、设置转换和渲染记录 |
 | `src/scenarios/particle_life/` | 无 Vulkan 类型依赖的 ParticleLifeScene 与 ParticleLifeGpu，提供 CPU 周期邻域、GPU 状态管理、分段作用力及测试；ParticleLifePresentation 负责后端与作用矩阵面板、设置转换和 CPU 渲染记录 |
-| `shaders/` | `particle.*` 粒子、`grid.*` 辅助线、`smoke/triangle.*` 三角形、`compute/boids.comp` 网格计算及 `compute/particle_life.comp` 分块全对计算着色器 |
+| `shaders/` | `particle.*` 粒子、`grid.*` 辅助线、`smoke/triangle.*` 三角形，以及 `compute/boids.comp` / `compute/particle_life.comp` 空间网格计算着色器 |
 | `cmake/` | 依赖获取与着色器编译辅助配置 |
 | `third_party/` | 第三方依赖说明；实际源码由 FetchContent 放入构建目录 |
 
@@ -396,4 +403,4 @@ GPU 步进使用旧状态读取、新状态写入的双缓冲。四种显示颜�
 
 `BoidsScene::currentSimulation()` 返回当前后端；原有 `simulation()` 保留 CPU 具体接口，GPU 活跃时不代表当前状态。`setBackend()` 在状态传输成功后提交切换，并保留暂停与模拟时钟；CPU 干预对象留在 CPU 后端。两种后端都保留固定步长与交互预算。均匀网格能减少普通分布的候选数量，但高密度或极大半径仍可退化到近似全量两两比较；十万个体的短时测试不代表所有密度下都能实时运行。
 
-`ParticleLifeGpu` 使用独立的计算着色器，每个 128 线程工作组将邻居位置、ID 和物种分块载入共享内存，逐对计算周期最短距离与有向矩阵作用力。算法无邻居容量上限，使用补偿浮点求和减小与 CPU 双精度累计的误差。模拟双缓冲本身即可供 `ParticleRenderer::drawBuffer` 绘制；物种标签留在 CPU 供面板统计，位置和速度在 GPU 演化期间不回读。`ParticleLifeScene::agents()` 在 GPU 模式返回空视图，只有显式 `readback()` 或切换到 CPU 才下载状态；降低速度上限也由 GPU 计算完成。
+`ParticleLifeGpu` 使用独立的计算着色器，在 GPU 内按格计数、计算前缀和并散射粒子索引（count / scan / scatter），建立连续的 cell→particle 索引区间。演化线程按格内索引顺序分配，使空间上相邻的粒子接近执行；每个粒子仅查询相邻格子，再按作用半径与周期最短距离精确筛选。2D 的 Y 轴使用单格，3D 使用完整三轴网格；周期相邻格去重，每格和每粒子的邻居数量均无固定截断。作用力使用补偿浮点求和减小与 CPU 双精度累计的误差。模拟双缓冲本身即可供 `ParticleRenderer::drawBuffer` 绘制；物种标签留在 CPU 供面板统计，位置和速度在 GPU 演化期间不回读。`ParticleLifeScene::agents()` 在 GPU 模式返回空视图，只有显式 `readback()` 或切换到 CPU 才下载状态；降低速度上限也由 GPU 计算完成。网格可减少一般分布的候选邻居，高密度团簇仍可能退化到接近全量两两比较。

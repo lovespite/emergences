@@ -14,7 +14,8 @@ public:
     int run(const std::filesystem::path& shaderDirectory, bool smokeTest = false,
             bool gpuSmokeTest = false, config::ConfigFile* config = nullptr,
             bool startAnts = false, bool antsSmokeTest = false,
-            bool startParticleLife = false, bool particleLifeSmokeTest = false);
+            bool startParticleLife = false, bool particleLifeSmokeTest = false,
+            bool startParticleLife3d = false);
     int runTriangle(const std::filesystem::path& shaderDirectory, bool smokeTest = false);
     int runPreview(const std::filesystem::path& shaderDirectory, bool smokeTest = false,
                    config::ConfigFile* config = nullptr);

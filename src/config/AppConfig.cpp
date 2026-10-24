@@ -1,6 +1,7 @@
 #include "config/AppConfig.h"
 
 #include <array>
+#include <algorithm>
 #include <atomic>
 #include <charconv>
 #include <chrono>
@@ -82,6 +83,7 @@ std::vector<Field> fields(Settings& settings) {
         {"scenarios.ants.food_spawn_interval", &a.foodSpawnInterval, 1.0F, 120.0F},
         {"scenarios.particle_life.count", &life.count, 0.0F, 10000.0F},
         {"scenarios.particle_life.backend", &life.gpu, 0.0F, 0.0F, "cpu|gpu"},
+        {"scenarios.particle_life.dimensions", &life.threeDimensional, 0.0F, 0.0F, "2d|3d"},
         {"scenarios.particle_life.seed", &life.seed, 0.0F, static_cast<float>(std::numeric_limits<int>::max())},
         {"scenarios.particle_life.species_count", &life.speciesCount, 1.0F, 8.0F},
         {"scenarios.particle_life.paused", &life.paused},
@@ -360,6 +362,13 @@ bool atomicWrite(const std::filesystem::path& path, const std::string& content,
 
 ConfigFile::ConfigFile(std::filesystem::path path) : path_(std::move(path)) {
     load();
+}
+
+bool ConfigFile::hasValue(std::string_view key) const {
+    return std::any_of(lines_.begin(), lines_.end(), [key](const auto& line) {
+        const auto parsed = entry(line);
+        return parsed.equals != std::string_view::npos && parsed.key == key;
+    });
 }
 
 void ConfigFile::load() {

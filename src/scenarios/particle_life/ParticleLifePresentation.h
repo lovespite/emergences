@@ -22,7 +22,7 @@ struct ParticleLifePanelActions {
 
 void applyParticleLifeSettings(ParticleLifeScene&, const config::ParticleLifeSettings&);
 void captureParticleLifeSettings(const ParticleLifeScene&, config::ParticleLifeSettings&);
-void resetParticleLifeCamera(core::Camera&);
+void resetParticleLifeCamera(core::Camera&, bool threeDimensional = false);
 // Draws inside the application's shared control window.
 ParticleLifePanelActions drawParticleLifeControls(ParticleLifeScene&,
     config::ParticleLifeSettings&, core::Camera&, const core::FrameRenderer&,

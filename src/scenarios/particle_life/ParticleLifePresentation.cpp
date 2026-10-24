@@ -89,6 +89,7 @@ void drawMatrix(ParticleLifeScene& scene) {
 } // namespace
 
 void applyParticleLifeSettings(ParticleLifeScene& scene, const config::ParticleLifeSettings& settings) {
+    scene.setThreeDimensional(settings.threeDimensional);
     auto parameters = scene.parameters();
     parameters.interactionRadius = settings.interactionRadius;
     parameters.force = settings.force;
@@ -112,6 +113,7 @@ void captureParticleLifeSettings(const ParticleLifeScene& scene, config::Particl
     settings.speciesCount = static_cast<int>(scene.speciesCount());
     settings.seed = static_cast<int>(scene.seed());
     settings.paused = scene.paused();
+    settings.threeDimensional = scene.threeDimensional();
     settings.interactionRadius = parameters.interactionRadius;
     settings.force = parameters.force;
     settings.friction = parameters.friction;
@@ -122,7 +124,12 @@ void captureParticleLifeSettings(const ParticleLifeScene& scene, config::Particl
     settings.customMatrix = true;
 }
 
-void resetParticleLifeCamera(core::Camera& camera) {
+void resetParticleLifeCamera(core::Camera& camera, bool threeDimensional) {
+    if (threeDimensional) {
+        camera.setState({{-ParticleLifeScene::WorldHalfExtent * 0.2F, 0.0F, 0.0F},
+            0.65F, 0.40F, ParticleLifeScene::WorldHalfExtent * 4.6F});
+        return;
+    }
     camera.setState({{-ParticleLifeScene::WorldHalfExtent * 0.2F, 0.0F, 0.0F},
         0.0F, 1.56F, ParticleLifeScene::WorldHalfExtent * 2.875F});
 }
@@ -132,6 +139,13 @@ ParticleLifePanelActions drawParticleLifeControls(ParticleLifeScene& scene,
     const core::FrameRenderer& renderer, bool& antialiasing, bool& grid, bool& bounds,
     std::string& backendError) {
     ParticleLifePanelActions actions;
+    int dimensions = scene.threeDimensional() ? 1 : 0;
+    if (ImGui::Combo("Dimensions", &dimensions, "2D plane\0" "3D volume\0")) {
+        scene.setThreeDimensional(dimensions == 1);
+        settings.threeDimensional = scene.threeDimensional();
+        resetParticleLifeCamera(camera, scene.threeDimensional());
+        actions.skipElapsed = true;
+    }
     if (ImGui::BeginCombo("Backend", scene.backend() == sim::Backend::CPU ? "CPU" : "GPU compute")) {
         for (const auto backend : {sim::Backend::CPU, sim::Backend::GPU}) {
             ImGui::BeginDisabled(backend == sim::Backend::GPU && !scene.gpuAvailable());
@@ -151,10 +165,9 @@ ParticleLifePanelActions drawParticleLifeControls(ParticleLifeScene& scene,
         ImGui::EndCombo();
     }
     if (!backendError.empty()) ImGui::TextWrapped("%s", backendError.c_str());
-    ImGui::TextDisabled("%s | %.0f x %.0f wrapped world",
+    ImGui::TextDisabled("%s | %s wrapped world",
         scene.backend() == sim::Backend::CPU ? "CPU" : "GPU compute",
-        static_cast<double>(2.0F * ParticleLifeScene::WorldHalfExtent),
-        static_cast<double>(2.0F * ParticleLifeScene::WorldHalfExtent));
+        scene.threeDimensional() ? "100 x 100 x 100" : "100 x 100");
     int count = static_cast<int>(scene.count());
     if (ImGui::SliderInt("Particles", &count, 0, static_cast<int>(ParticleLifeScene::MaxParticles),
             "%d", ImGuiSliderFlags_AlwaysClamp) && count != static_cast<int>(scene.count())) {
@@ -202,7 +215,10 @@ ParticleLifePanelActions drawParticleLifeControls(ParticleLifeScene& scene,
                 scene.setSeed(static_cast<std::uint32_t>(nextSeed(static_cast<int>(scene.seed()))));
                 actions.skipElapsed = true;
             }
-            ImGui::TextWrapped("Particles live on a 2D plane and wrap across the world edges. Each color is a species with its own attraction and repulsion rules.");
+            ImGui::TextWrapped(scene.threeDimensional()
+                ? "Particles move freely in a 3D volume and wrap across all six faces. Each color is a species with its own attraction and repulsion rules."
+                : "Particles live on a 2D plane and wrap across the world edges. Each color is a species with its own attraction and repulsion rules.");
+            ImGui::TextWrapped("Changing dimensions regenerates particles and restarts time, keeping the backend, parameters and interaction matrix.");
             ImGui::TextWrapped("Changing particle count, species count or particle seed restarts positions. Reset replays the current seed and keeps the interaction matrix.");
             ImGui::Separator();
             for (std::size_t species = 0; species < scene.speciesCount(); ++species) {
@@ -218,6 +234,10 @@ ParticleLifePanelActions drawParticleLifeControls(ParticleLifeScene& scene,
         if (ImGui::BeginTabItem("Behavior")) {
             auto parameters = scene.parameters();
             bool changed = slider("Interaction radius", parameters.interactionRadius, 1.0F, 30.0F);
+            if (scene.threeDimensional() && ImGui::Button("Use 3D starter radius (22)")) {
+                parameters.interactionRadius = 22.0F;
+                changed = true;
+            }
             changed |= slider("Force", parameters.force, 0.0F, 100.0F);
             changed |= slider("Friction", parameters.friction, 0.0F, 20.0F);
             changed |= slider("Core repulsion", parameters.repulsion, 0.0F, 5.0F);
@@ -255,8 +275,10 @@ ParticleLifePanelActions drawParticleLifeControls(ParticleLifeScene& scene,
             ImGui::EndDisabled();
             ImGui::Checkbox("Floor grid", &grid);
             ImGui::Checkbox("World bounds", &bounds);
-            if (ImGui::Button("Reset camera")) resetParticleLifeCamera(camera);
-            ImGui::TextWrapped("Colors identify species. The default camera looks down onto the simulation plane.");
+            if (ImGui::Button("Reset camera")) resetParticleLifeCamera(camera, scene.threeDimensional());
+            ImGui::TextWrapped(scene.threeDimensional()
+                ? "Colors identify species. Drag to orbit around the volume; zoom out to inspect its clusters and wrapped boundaries."
+                : "Colors identify species. The default camera looks down onto the simulation plane.");
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();

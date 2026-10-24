@@ -76,6 +76,7 @@ void missingFileCreatesDefaults(const std::filesystem::path& directory) {
             "Booleans must use on/off");
     require(text.find("scenarios.particle_life.count = 2000\n") != std::string::npos &&
                 text.find("scenarios.particle_life.backend = gpu\n") != std::string::npos &&
+                text.find("scenarios.particle_life.dimensions = 2d\n") != std::string::npos &&
                 text.find("scenarios.particle_life.species_count = 6\n") != std::string::npos &&
                 text.find("scenarios.particle_life.custom_matrix = off\n") != std::string::npos &&
                 text.find("scenarios.particle_life.matrix.7.7 = 0\n") != std::string::npos,
@@ -235,10 +236,15 @@ void particleLifeRoundTripAndValidation(const std::filesystem::path& directory) 
             "Particle Life must be selectable by its symbolic scenario name");
     auto& life = config.settings().particleLife;
     require(life.gpu, "Particle Life must default to preferring the GPU backend");
+    require(!life.threeDimensional && !config.hasValue("scenarios.particle_life.dimensions") &&
+                !config.hasValue("scenarios.particle_life.interaction_radius") &&
+                config.hasValue("scenarios.particle_life.matrix.1.0"),
+            "Old configurations must remain 2D and identify explicitly supplied settings");
     require(life.matrix[8] == -0.75F && life.matrix[1] == 0.0F && !life.customMatrix,
             "Matrix rows must identify receiving species with a fixed stride of eight");
     life.count = 10000;
     life.gpu = false;
+    life.threeDimensional = true;
     life.seed = std::numeric_limits<int>::max();
     life.speciesCount = 8;
     life.paused = true;
@@ -257,12 +263,16 @@ void particleLifeRoundTripAndValidation(const std::filesystem::path& directory) 
     const auto saved = read(path);
     require(saved.find("app.scenario = particle_life\n") != std::string::npos &&
                 saved.find("scenarios.particle_life.backend = cpu\n") != std::string::npos &&
+                saved.find("scenarios.particle_life.dimensions = 3d\n") != std::string::npos &&
                 saved.find("scenarios.particle_life.custom_matrix = on\n") != std::string::npos &&
                 saved.find("# asymmetric rule\n") != std::string::npos,
             "Saving Particle Life must retain selection, custom rules, and matrix comments");
     ConfigFile reloaded(path);
     require(reloaded.settings() == config.settings() && reloaded.warnings().empty(),
             "Every Particle Life setting and directed matrix entry must round trip exactly");
+    require(config.hasValue("scenarios.particle_life.interaction_radius") &&
+                reloaded.hasValue("scenarios.particle_life.dimensions"),
+            "Saved parameters must be distinguishable from startup defaults");
     life.matrix[63] = std::numeric_limits<float>::infinity();
     require(!config.save() && read(path) == saved,
             "Non-finite runtime matrix values must leave the saved configuration intact");
@@ -278,6 +288,9 @@ void particleLifeRoundTripAndValidation(const std::filesystem::path& directory) 
         "scenarios.particle_life.backend = GPU",
         "scenarios.particle_life.backend = vulkan",
         "scenarios.particle_life.backend = true",
+        "scenarios.particle_life.dimensions = 3D",
+        "scenarios.particle_life.dimensions = 4d",
+        "scenarios.particle_life.dimensions = true",
         "scenarios.particle_life.seed = -1",
         "scenarios.particle_life.seed = 2147483648",
         "scenarios.particle_life.species_count = 0",
@@ -325,6 +338,19 @@ void particleLifeRoundTripAndValidation(const std::filesystem::path& directory) 
     ConfigFile invalidBackend(path);
     require(!invalidBackend.settings().particleLife.gpu && invalidBackend.warnings().size() == 1,
             "Invalid backend names must retain the last valid CPU preference");
+    write(path, "scenarios.particle_life.dimensions = 3d\n"
+                "scenarios.particle_life.dimensions = invalid\n"
+                "scenarios.particle_life.interaction_radius = 17.5\n");
+    ConfigFile invalidDimensions(path);
+    require(invalidDimensions.settings().particleLife.threeDimensional &&
+                invalidDimensions.settings().particleLife.interactionRadius == 17.5F &&
+                invalidDimensions.warnings().size() == 1,
+            "Invalid dimensions must retain 3D and preserve an explicitly saved radius");
+    write(path, "scenarios.particle_life.dimensions = 3d\n"
+                "scenarios.particle_life.dimensions = 2d\n");
+    ConfigFile planar(path);
+    require(!planar.settings().particleLife.threeDimensional && planar.warnings().empty(),
+            "The saved dimension selection must support returning to 2D");
 }
 
 void antSettingsValidation(const std::filesystem::path& directory) {

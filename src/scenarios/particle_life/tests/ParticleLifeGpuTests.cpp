@@ -53,14 +53,16 @@ public:
 
 float maximumPositionError{}, maximumVelocityError{};
 void compare(std::span<const Agent> expected, std::span<const Agent> actual,
-    const sim::World& world, float tolerance = 0.002F) {
+    const sim::World& world, float tolerance = 0.002F, bool threeDimensional = false) {
     require(expected.size() == actual.size(), "GPU count differs from CPU reference");
     for (std::size_t i = 0; i < expected.size(); ++i) {
         const auto& a = expected[i];
         const auto& b = actual[i];
         require(a.id == b.id && a.size == b.size && a.color == b.color && a.reserved == b.reserved,
             "GPU evolution changed particle metadata");
-        require(b.position.y == 0.0F && b.velocity.y == 0.0F, "GPU particles left the XZ plane");
+        if (!threeDimensional) {
+            require(b.position.y == 0.0F && b.velocity.y == 0.0F, "GPU particles left the XZ plane");
+        }
         for (glm::length_t axis = 0; axis < 3; ++axis) {
             require(std::isfinite(b.position[axis]) && std::isfinite(b.velocity[axis]), "Nonfinite GPU state");
             require(b.position[axis] >= world.minimum[axis] && b.position[axis] < world.maximum[axis],
@@ -164,6 +166,115 @@ void parameterChanges(ObservedDevice& device, const std::string& shader) {
     }
 }
 
+void threeDimensionalTrajectories(ObservedDevice& device, const std::string& shader) {
+    ParticleLifeGpu gpu{device, shader};
+    // Radius 1 exercises all 32^3 cells and 256 scan blocks; radius 50
+    // exercises two-cell periodic axes whose adjacent cells must be deduplicated.
+    for (float radius : {1.0F, 12.0F, 22.0F, 50.0F}) {
+        for (std::size_t count : {0U, 1U, 127U, 128U, 129U, 513U}) {
+            ParticleLifeScene cpu{count, 827U};
+            cpu.setThreeDimensional(true);
+            cpu.setSpeciesCount(8);
+            auto parameters = cpu.parameters();
+            parameters.interactionRadius = radius;
+            cpu.setParameters(parameters);
+            gpu.setState(cpu.agents(), cpu.species());
+            for (int tick = 0; tick < 8; ++tick) {
+                cpu.advance(ParticleLifeScene::FixedStepSeconds);
+                gpu.step(Step, cpu.parameters(), cpu.matrix(), true);
+            }
+            compare(cpu.agents(), gpu.readback(), cpu.world(), 0.002F, true);
+        }
+    }
+
+    ParticleLifeScene cpu{2};
+    cpu.setThreeDimensional(true);
+    const std::array<std::uint8_t, 2> types{0, 0};
+    auto parameters = cpu.parameters();
+    parameters.friction = 0.0F;
+    cpu.setParameters(parameters);
+    cpu.setInteraction(0, 0, 1.0F);
+    std::vector<Agent> pair(cpu.agents().begin(), cpu.agents().end());
+    pair[0].position = {0.0F, 0.0F, 0.0F};
+    pair[1].position = {0.0F, 6.0F, 0.0F};
+    cpu.setAgents(pair, types);
+    gpu.setState(cpu.agents(), cpu.species());
+    cpu.advance(ParticleLifeScene::FixedStepSeconds);
+    gpu.step(Step, cpu.parameters(), cpu.matrix(), true);
+    auto result = gpu.readback();
+    compare(cpu.agents(), result, cpu.world(), 0.00001F, true);
+    require(result[0].velocity.y > 0.0F && result[1].velocity.y < 0.0F,
+        "3D interactions did not accelerate along Y");
+    require(result[0].velocity.x == 0.0F && result[0].velocity.z == 0.0F,
+        "A pure Y interaction produced lateral acceleration");
+
+    pair[0].position = {0.0F, 49.9F, 0.0F};
+    pair[1].position = {0.0F, -49.9F, 0.0F};
+    parameters.interactionRadius = 1.0F; // Periodic neighbors also exercise a 256-block grid.
+    cpu.setParameters(parameters);
+    cpu.setAgents(pair, types);
+    gpu.setState(cpu.agents(), cpu.species());
+    cpu.advance(ParticleLifeScene::FixedStepSeconds);
+    gpu.step(Step, cpu.parameters(), cpu.matrix(), true);
+    result = gpu.readback();
+    compare(cpu.agents(), result, cpu.world(), 0.00001F, true);
+    require(result[0].velocity.y < 0.0F && result[1].velocity.y > 0.0F,
+        "GPU grid missed neighbors across the periodic Y boundary");
+
+    parameters.force = 0.0F; // Drift must wrap Y even when grid construction is skipped.
+    cpu.setParameters(parameters);
+    pair[0].velocity = {0.0F, 19.0F, 0.0F};
+    pair[1].velocity = {0.0F, -19.0F, 0.0F};
+    cpu.setAgents(pair, types);
+    gpu.setState(cpu.agents(), cpu.species());
+    cpu.advance(ParticleLifeScene::FixedStepSeconds);
+    gpu.step(Step, cpu.parameters(), cpu.matrix(), true);
+    result = gpu.readback();
+    compare(cpu.agents(), result, cpu.world(), 0.00001F, true);
+    require(result[0].position.y < -49.0F && result[1].position.y > 49.0F,
+        "GPU integration did not wrap positive and negative Y crossings");
+    gpu.clampSpeed(0.5F);
+    result = gpu.readback();
+    require(result[0].velocity.y > 0.49F && result[1].velocity.y < -0.49F,
+        "GPU speed clamp erased the Y direction");
+    for (const auto& agent : result) {
+        require(glm::length(glm::dvec3(agent.velocity)) <= 0.5,
+            "GPU 3D speed clamp exceeded its limit");
+    }
+
+    // More than eight workgroups occupy one cell. Low force prevents velocity
+    // saturation from concealing a dropped-neighbor error in a dense cluster.
+    cpu.setCount(1025);
+    parameters.interactionRadius = 12.0F;
+    parameters.force = 0.01F;
+    parameters.maxSpeed = 100.0F;
+    cpu.setParameters(parameters);
+    auto dense = cpu.readback();
+    for (auto& agent : dense) agent.position = glm::vec3(3.0F) + agent.position * 0.005F;
+    cpu.setAgents(dense, cpu.species());
+    gpu.setState(cpu.agents(), cpu.species());
+    for (int tick = 0; tick < 4; ++tick) {
+        cpu.advance(ParticleLifeScene::FixedStepSeconds);
+        gpu.step(Step, cpu.parameters(), cpu.matrix(), true);
+    }
+    compare(cpu.agents(), gpu.readback(), cpu.world(), 0.0001F, true);
+
+    // Exact coincidences exercise the deterministic antisymmetric six-axis
+    // fallback and verify CPU/GPU agreement without NaNs or a planar bias.
+    cpu.setCount(16);
+    auto coincident = cpu.readback();
+    for (auto& agent : coincident) agent.position = glm::vec3(0.0F);
+    cpu.setAgents(coincident, cpu.species());
+    gpu.setState(cpu.agents(), cpu.species());
+    cpu.advance(ParticleLifeScene::FixedStepSeconds);
+    gpu.step(Step, cpu.parameters(), cpu.matrix(), true);
+    result = gpu.readback();
+    compare(cpu.agents(), result, cpu.world(), 0.00001F, true);
+    require(std::any_of(result.begin(), result.end(), [](const auto& agent) {
+        return agent.velocity.y != 0.0F;
+    }), "Coincident 3D particles never separated along Y");
+}
+
 void sceneTransfersAndResidentState(ObservedDevice& device, const std::string& shader) {
     ParticleLifeScene scene{257, 901U};
     scene.advance(1.0 / 60.0);
@@ -217,6 +328,26 @@ void sceneTransfersAndResidentState(ObservedDevice& device, const std::string& s
     requireIdentical(seeded.agents(), scene.readback());
     scene.setBackend(sim::Backend::CPU);
     require(scene.count() == 129, "GPU population changes were not preserved on transfer");
+
+    scene.setThreeDimensional(true);
+    scene.setBackend(sim::Backend::GPU);
+    scene.setPaused(false);
+    scene.advance(ParticleLifeScene::FixedStepSeconds);
+    const auto downloads3d = device.downloads;
+    const auto uploads3d = device.uploads;
+    for (int tick = 0; tick < 8; ++tick) scene.advance(ParticleLifeScene::FixedStepSeconds);
+    require(device.downloads == downloads3d && device.uploads == uploads3d,
+        "3D GPU steps transferred resident simulation state");
+    const auto spatialState = scene.readback();
+    scene.setBackend(sim::Backend::CPU);
+    require(scene.threeDimensional(), "Backend transfer lost the 3D setting");
+    requireIdentical(spatialState, scene.agents());
+    scene.setBackend(sim::Backend::GPU);
+    scene.setThreeDimensional(false);
+    for (const auto& agent : scene.readback()) {
+        require(agent.position.y == 0.0F && agent.velocity.y == 0.0F,
+            "Switching a GPU scene to 2D failed to restore the XZ plane");
+    }
 }
 
 double median(std::vector<double> values) {
@@ -229,16 +360,24 @@ double median(std::vector<double> values) {
 // synchronous submission/fence completion, excluding upload/readback and rendering.
 void benchmark(ObservedDevice& device, const std::string& shader) {
     ParticleLifeGpu gpu{device, shader};
-    std::cout << "population,fixture,cpu_median_ms,gpu_median_ms,speedup\n";
-    for (std::size_t count : {2000U, 5000U, 10000U}) {
+    std::cout << "dimensions,radius,population,fixture,cpu_median_ms,gpu_median_ms,speedup\n";
+    for (bool threeDimensional : {false, true}) {
+      for (std::size_t count : {2000U, 5000U, 10000U}) {
         for (bool dense : {false, true}) {
             ParticleLifeScene cpu{count, 12345U};
+            cpu.setThreeDimensional(threeDimensional);
+            if (threeDimensional) {
+                auto parameters = cpu.parameters();
+                parameters.interactionRadius = 22.0F;
+                cpu.setParameters(parameters);
+            }
             const std::vector<std::uint8_t> types(cpu.species().begin(), cpu.species().end());
             auto snapshot = cpu.readback();
             if (dense) {
                 for (auto& agent : snapshot) {
                     const auto group = agent.id % 4;
-                    const glm::vec3 center{-20.0F + 40.0F * static_cast<float>(group % 2), 0.0F,
+                    const glm::vec3 center{-20.0F + 40.0F * static_cast<float>(group % 2),
+                        threeDimensional ? -20.0F + 40.0F * static_cast<float>(group % 2) : 0.0F,
                         -20.0F + 40.0F * static_cast<float>(group / 2)};
                     agent.position = center + agent.position * 0.06F;
                 }
@@ -250,18 +389,20 @@ void benchmark(ObservedDevice& device, const std::string& shader) {
                 const auto startCpu = std::chrono::steady_clock::now();
                 cpu.advance(ParticleLifeScene::FixedStepSeconds);
                 const auto endCpu = std::chrono::steady_clock::now();
-                gpu.step(Step, cpu.parameters(), cpu.matrix());
+                gpu.step(Step, cpu.parameters(), cpu.matrix(), threeDimensional);
                 const auto endGpu = std::chrono::steady_clock::now();
                 if (trial != 0) {
                     cpuTimes.push_back(std::chrono::duration<double, std::milli>(endCpu - startCpu).count());
                     gpuTimes.push_back(std::chrono::duration<double, std::milli>(endGpu - endCpu).count());
                 }
             }
-            compare(cpu.agents(), gpu.readback(), cpu.world());
+            compare(cpu.agents(), gpu.readback(), cpu.world(), 0.002F, threeDimensional);
             const double cpuMs = median(cpuTimes), gpuMs = median(gpuTimes);
-            std::cout << count << ',' << (dense ? "four_dense_clusters" : "uniform") << ','
+            std::cout << (threeDimensional ? "3D" : "2D") << ',' << cpu.parameters().interactionRadius
+                << ',' << count << ',' << (dense ? "four_dense_clusters" : "uniform") << ','
                 << std::fixed << std::setprecision(3) << cpuMs << ',' << gpuMs << ',' << cpuMs / gpuMs << '\n';
         }
+      }
     }
 }
 } // namespace
@@ -280,6 +421,7 @@ int main(int argc, char** argv) {
             else {
                 trajectories(device, shader);
                 parameterChanges(device, shader);
+                threeDimensionalTrajectories(device, shader);
                 sceneTransfersAndResidentState(device, shader);
             }
         }

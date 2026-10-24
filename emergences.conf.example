@@ -181,7 +181,7 @@ scenarios.ants.show_food_pheromone = on
 scenarios.ants.agent_size = 0.5
 
 # ── Particle Life 场景：种类与运行状态 ──────────────────────────────
-# 粒子在水平 XZ 平面上活动，X、Z 范围均为 [-50, 50)，按有向种类规则形成团簇与运动结构。
+# 2D 在水平 XZ 平面活动；3D 在立方体内活动，所有活动坐标范围均为 [-50, 50)。
 # 使用周期边界，越过世界一侧的粒子从相对侧返回，边缘邻居按最短周期距离相互作用。
 # 参数、种子和规则矩阵会保存；每次启动重新生成粒子的位置与速度。
 
@@ -192,6 +192,12 @@ scenarios.particle_life.count = 2000
 # GPU 初始化失败时回退 CPU；自动回退保留 GPU 偏好，供下次启动重试。
 # 面板切换成功后会保存所选后端；切换保留粒子状态、规则矩阵和模拟时间。
 scenarios.particle_life.backend = gpu
+
+# 空间维度。可选 2d（默认，水平平面）或 3d（完整体积）。
+# 也可通过 emergences --particle-life-3d 直接启动 GPU 3D，或在面板 Dimensions 中切换。
+# 切维度重新生成粒子并重置时间，保留后端、参数和规则；3D 使用斜视相机和立方体边界。
+# GPU 在显存内构建空间网格、模拟并直接渲染，无每帧状态回读。
+scenarios.particle_life.dimensions = 2d
 
 # 粒子种子。整数范围 0..2147483647，默认 12345；用于复现初始粒子布局。
 # 默认规则固定；面板的 Rule seed 独立生成规则，保存的是完整矩阵。
@@ -207,6 +213,8 @@ scenarios.particle_life.paused = off
 # ── Particle Life 场景：作用力与显示 ────────────────────────────────
 
 # 相互作用半径，单位为世界单位。范围 1..30，默认 12；范围外的粒子不产生作用力。
+# 3D 建议从 22 开始。--particle-life-3d 仅在未保存此项时使用 22，保留已有配置。
+# 面板 Behavior 的 Use 3D starter radius (22) 可主动应用；左键拖动相机观察三维团簇。
 scenarios.particle_life.interaction_radius = 12
 
 # 作用力整体强度。范围 0..100，默认 30；0 关闭粒子间的作用力。

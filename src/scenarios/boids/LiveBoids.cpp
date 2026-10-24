@@ -102,7 +102,8 @@ Actions drawPanel(BoidsScene& scene, ants::AntScene& antScene,
     if (ImGui::Combo("Scene", &controls.scenario, "Boids\0Ant Colony\0Particle Life\0")) {
         actions.skipElapsed = true;
         if (controls.scenario == 1) ants::resetAntCamera(camera);
-        else if (controls.scenario == 2) particle_life::resetParticleLifeCamera(camera);
+        else if (controls.scenario == 2)
+            particle_life::resetParticleLifeCamera(camera, particleLifeScene.threeDimensional());
         else camera.reset();
     }
     if (controls.scenario == 1 || controls.scenario == 2) {
@@ -456,11 +457,14 @@ void checkedParticleLifeSwitch(particle_life::ParticleLifeScene& scene, sim::Bac
     const auto before = scene.readback();
     const auto steps = scene.totalSteps();
     const bool paused = scene.paused();
+    const bool threeDimensional = scene.threeDimensional();
     scene.setBackend(backend);
     const auto after = scene.readback();
     require(before.size() == after.size(), "Particle Life backend switch changed count");
     require(scene.totalSteps() == steps && scene.paused() == paused,
         "Particle Life backend switch changed clock or pause");
+    require(scene.threeDimensional() == threeDimensional,
+        "Particle Life backend switch changed dimensions");
     for (std::size_t i = 0; i < before.size(); ++i) {
         require(before[i].position == after[i].position && before[i].velocity == after[i].velocity &&
             before[i].id == after[i].id && before[i].color == after[i].color &&
@@ -469,14 +473,42 @@ void checkedParticleLifeSwitch(particle_life::ParticleLifeScene& scene, sim::Bac
     }
 }
 
+void checkedParticleLifeDimensions(particle_life::ParticleLifeScene& scene, bool threeDimensional,
+                                  core::Camera& camera) {
+    const auto matrix = scene.matrix();
+    const auto parameters = scene.parameters();
+    const auto backend = scene.backend();
+    const auto count = scene.count();
+    const auto species = scene.speciesCount();
+    const auto seed = scene.seed();
+    const auto paused = scene.paused();
+    scene.setThreeDimensional(threeDimensional);
+    require(scene.threeDimensional() == threeDimensional && scene.totalSteps() == 0 &&
+        scene.backend() == backend && scene.count() == count && scene.speciesCount() == species &&
+        scene.seed() == seed && scene.paused() == paused && scene.matrix() == matrix,
+        "Particle Life dimension switch lost state or failed to reset its clock");
+    const auto& updated = scene.parameters();
+    require(updated.interactionRadius == parameters.interactionRadius && updated.force == parameters.force &&
+        updated.friction == parameters.friction && updated.repulsion == parameters.repulsion &&
+        updated.coreRatio == parameters.coreRatio && updated.maxSpeed == parameters.maxSpeed,
+        "Particle Life dimension switch changed parameters");
+    const auto state = scene.readback();
+    require(threeDimensional ? std::any_of(state.begin(), state.end(), [](const auto& agent) {
+        return agent.position.y != 0.0F;
+    }) : std::all_of(state.begin(), state.end(), [](const auto& agent) {
+        return agent.position.y == 0.0F && agent.velocity.y == 0.0F;
+    }), "Particle Life dimension switch did not regenerate the expected volume or plane");
+    particle_life::resetParticleLifeCamera(camera, threeDimensional);
+}
+
 } // namespace
 
 int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, bool gpuSmokeTest,
                   config::ConfigFile* config, bool startAnts, bool antsSmokeTest,
-                  bool startParticleLife, bool particleLifeSmokeTest) {
+                  bool startParticleLife, bool particleLifeSmokeTest, bool startParticleLife3d) {
     const bool anySmokeTest = smokeTest || gpuSmokeTest || antsSmokeTest || particleLifeSmokeTest;
     if (anySmokeTest) config = nullptr;
-    int titledScenario = startParticleLife || particleLifeSmokeTest ? 2 :
+    int titledScenario = startParticleLife || particleLifeSmokeTest || startParticleLife3d ? 2 :
         startAnts || antsSmokeTest ? 1 : config ? config->settings().scenario : 0;
     core::Window window{1280, 800, sceneWindowTitle(titledScenario)};
     if (config) window.setFullscreen(config->settings().view.fullscreen);
@@ -501,6 +533,9 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
     std::uint64_t inactiveAntSteps = 0;
     bool observedParticleLifeMotion = false;
     bool observedParticleLifeGpuMotion = false;
+    bool observedParticleLife3dGpuMotion = false;
+    bool observedParticleLife3dWrap = false;
+    bool observedParticleLife2dReturn = false;
     std::uint64_t inactiveParticleLifeSteps = 0;
     {
         core::VulkanComputeDevice compute{context};
@@ -509,6 +544,8 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
         core::LineRenderer lines{context, shaderDirectory};
         core::LineRenderer antLines{context, shaderDirectory, true, ants::AntScene::WorldHalfExtent};
         core::LineRenderer particleLifeLines{context, shaderDirectory, true,
+            particle_life::ParticleLifeScene::WorldHalfExtent};
+        core::LineRenderer particleLifeVolumeLines{context, shaderDirectory, false,
             particle_life::ParticleLifeScene::WorldHalfExtent};
         core::ImGuiLayer ui{context, window};
         // Submission owner dies first, waiting while all recorded resources live.
@@ -547,8 +584,20 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
             if (controls.scenario != 1 || !config) ants::resetAntCamera(camera);
             controls.scenario = 1;
         }
+        if (startParticleLife3d) {
+            const bool enteringVolume = !particleLifeScene.threeDimensional();
+            controls.particleLife.threeDimensional = true;
+            controls.particleLife.gpu = true;
+            if (!config || !config->hasValue("scenarios.particle_life.interaction_radius"))
+                controls.particleLife.interactionRadius = 22.0F;
+            particle_life::applyParticleLifeSettings(particleLifeScene, controls.particleLife);
+            if (enteringVolume || controls.scenario != 2 || !config)
+                particle_life::resetParticleLifeCamera(camera, true);
+            controls.scenario = 2;
+        }
         if (startParticleLife || particleLifeSmokeTest) {
-            if (controls.scenario != 2 || !config) particle_life::resetParticleLifeCamera(camera);
+            if (controls.scenario != 2 || !config)
+                particle_life::resetParticleLifeCamera(camera, particleLifeScene.threeDimensional());
             controls.scenario = 2;
         }
         try {
@@ -631,6 +680,7 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
                     lines.configure(pass, renderer.sampleCount());
                     antLines.configure(pass, renderer.sampleCount());
                     particleLifeLines.configure(pass, renderer.sampleCount());
+                    particleLifeVolumeLines.configure(pass, renderer.sampleCount());
                     ui.configure(pass, imageCount, renderer.sampleCount());
                 },
                 [&](VkCommandBuffer commands, VkExtent2D extent, std::size_t frame) {
@@ -674,6 +724,13 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
                             particleLifeScene.randomizeMatrix(42U);
                             actions.skipElapsed = true;
                         }
+                        if (presentedFrames == 13 || presentedFrames == 38) {
+                            checkedParticleLifeDimensions(particleLifeScene, true, camera);
+                            auto parameters = particleLifeScene.parameters();
+                            parameters.interactionRadius = 22.0F;
+                            particleLifeScene.setParameters(parameters);
+                            actions.skipElapsed = true;
+                        }
                         if (presentedFrames == 18) {
                             particleLifeScene.setInteraction(0, 1, 0.85F);
                             particleLifeScene.setInteraction(1, 0, -0.65F);
@@ -681,8 +738,33 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
                                 particleLifeScene.matrix()[particle_life::ParticleLifeScene::MaxSpecies] == -0.65F,
                                 "Particle Life matrix lost directional interactions");
                         }
+                        if (presentedFrames == 20) {
+                            auto parameters = particleLifeScene.parameters();
+                            parameters.force = 0.0F;
+                            parameters.friction = 0.0F;
+                            particleLifeScene.setParameters(parameters);
+                            sim::Agent crossing;
+                            crossing.position = {0.0F, 49.99F, 0.0F};
+                            crossing.velocity = {0.0F, 20.0F, 0.0F};
+                            const std::uint8_t species = 0;
+                            particleLifeScene.setAgents(std::span{&crossing, 1}, std::span{&species, 1});
+                        }
+                        if (presentedFrames == 21) {
+                            auto parameters = particleLifeScene.parameters();
+                            parameters.force = 30.0F;
+                            parameters.friction = 4.0F;
+                            particleLifeScene.setParameters(parameters);
+                            particleLifeScene.setCount(2000);
+                        }
                         if (presentedFrames == 24) actions.reset = true;
+                        if (presentedFrames == 25) checkedParticleLifeSwitch(particleLifeScene, sim::Backend::CPU);
+                        if (presentedFrames == 26) checkedParticleLifeSwitch(particleLifeScene, sim::Backend::GPU);
                         if (presentedFrames == 28) particleLifeScene.setSpeciesCount(6);
+                        if (presentedFrames == 30) {
+                            checkedParticleLifeDimensions(particleLifeScene, false, camera);
+                            observedParticleLife2dReturn = true;
+                            actions.skipElapsed = true;
+                        }
                         if (presentedFrames == 31) checkedParticleLifeSwitch(particleLifeScene, sim::Backend::CPU);
                         if (presentedFrames == 32) {
                             inactiveParticleLifeSteps = particleLifeScene.totalSteps();
@@ -795,6 +877,25 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
                             for (std::size_t i = 0; i < state.size(); ++i) {
                                 require(state[i].color == particle_life::ParticleLifeScene::speciesColor(
                                     particleLifeScene.species()[i]), "Particle Life species color mismatch");
+                                for (glm::length_t axis = 0; axis < 3; ++axis) {
+                                    require(std::isfinite(state[i].position[axis]) &&
+                                        std::isfinite(state[i].velocity[axis]) &&
+                                        state[i].position[axis] >= particleLifeScene.world().minimum[axis] &&
+                                        state[i].position[axis] < particleLifeScene.world().maximum[axis],
+                                        "Particle Life left its periodic world bounds");
+                                }
+                                if (!particleLifeScene.threeDimensional())
+                                    require(state[i].position.y == 0.0F && state[i].velocity.y == 0.0F,
+                                        "2D Particle Life left its plane");
+                                else if (gpu && oldAgents.size() == state.size() && !actions.reset)
+                                    observedParticleLife3dGpuMotion |=
+                                        state[i].position.y != oldAgents[i].position.y && state[i].velocity.y != 0.0F;
+                            }
+                            if (presentedFrames == 20) {
+                                require(gpu && state.size() == 1 && state[0].position.y < -49.0F &&
+                                    std::abs(state[0].velocity.y - 20.0F) < 1.0e-4F,
+                                    "3D GPU Particle Life failed to wrap across the Y boundary");
+                                observedParticleLife3dWrap = true;
                             }
                             if (particleLifeScene.paused() && !actions.step && !actions.reset)
                                 require(particleLifeScene.totalSteps() == stepsBefore, "Paused Particle Life advanced");
@@ -815,11 +916,14 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
                         view.viewProjection = camera.viewProjection(aspect);
                         view.right = glm::vec4(camera.right(), 0);
                         view.up = glm::vec4(camera.up(), 0);
-                        view.options = {controls.particleLife.agentSize, 1.0F, 0, 0};
+                        view.options = {controls.particleLife.agentSize, 1.0F,
+                            particleLifeScene.threeDimensional() ? 1.0F : 0.0F, 0};
                         ui.endFrame();
                         if (particleLifeSmokeTest && !controls.panelVisible)
                             require(ImGui::GetDrawData()->TotalVtxCount == 0, "Hidden Particle Life panel left UI commands");
-                        particleLifeLines.draw(commands, view, controls.grid, controls.bounds);
+                        auto& lifeLines = particleLifeScene.threeDimensional()
+                            ? particleLifeVolumeLines : particleLifeLines;
+                        lifeLines.draw(commands, view, controls.grid, controls.bounds);
                         if (particleLifeScene.backend() == sim::Backend::GPU) {
                             const auto buffer = particleLifeScene.stateBuffer();
                             particles.drawBuffer(commands, frame, compute.buffer(buffer), compute.bufferSize(buffer),
@@ -1069,11 +1173,13 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
     }
     if (particleLifeSmokeTest) {
         require(presentedFrames >= 48 && generations >= 3 && observedParticleLifeMotion &&
-            observedParticleLifeGpuMotion && observedSceneSwitch,
+            observedParticleLifeGpuMotion && observedParticleLife3dGpuMotion && observedParticleLife3dWrap &&
+            observedParticleLife2dReturn && observedSceneSwitch,
             "Particle Life smoke test closed before all checks completed");
         std::cout << "Particle Life smoke test passed: " << presentedFrames << " frames, " << generations
             << " swapchain generations, 0/1/257/2000 particles, 6/8 species, matrix/seed/pause/step/reset, "
-               "CPU/GPU transfers/direct GPU rendering/scene switches/budget/MSAA/fullscreen/F1 panel, 0 validation errors.\n";
+               "2D/3D switches/Y motion/Y wrap/CPU/GPU transfers/direct GPU rendering/scene switches/"
+               "budget/MSAA/fullscreen/F1 panel, 0 validation errors.\n";
     }
     return 0;
 }

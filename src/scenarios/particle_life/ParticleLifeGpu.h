@@ -28,7 +28,7 @@ public:
     // must be below eight; particle fields are preserved, including IDs.
     void setState(std::span<const sim::Agent> agents, std::span<const std::uint8_t> species);
     void step(float dt, const ParticleLifeParameters& parameters,
-              const std::array<float, 64>& matrix);
+              const std::array<float, 64>& matrix, bool threeDimensional = false);
     void clampSpeed(float maximum);
     [[nodiscard]] std::vector<sim::Agent> readback();
     [[nodiscard]] sim::BufferHandle stateBuffer() const noexcept { return state_[current_]; }
@@ -37,13 +37,19 @@ public:
 private:
     struct Constants;
     void cleanup() noexcept;
-    void dispatch(const Constants& constants);
+    [[nodiscard]] sim::ComputeDispatch dispatch(const Constants& constants,
+        std::uint32_t stage, std::uint32_t groupCount) const;
 
     sim::ComputeDevice& device_;
     sim::PipelineHandle pipeline_{};
     sim::BufferHandle state_[2]{};
     sim::BufferHandle species_{};
     sim::BufferHandle matrix_{};
+    sim::BufferHandle cellCounts_{};
+    sim::BufferHandle cellOffsets_{};
+    sim::BufferHandle cellCursors_{};
+    sim::BufferHandle indices_{};
+    sim::BufferHandle blockSums_{};
     std::array<float, 64> uploadedMatrix_{};
     std::size_t count_{};
     unsigned current_{};

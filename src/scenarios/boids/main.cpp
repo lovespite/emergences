@@ -107,6 +107,7 @@ int main(int argc, char** argv) {
     bool antsSmokeTest = false;
     bool startAnts = false;
     bool startParticleLife = false;
+    bool startParticleLife3d = false;
     bool particleLifeSmokeTest = false;
     bool renderPreview = false;
     bool noConfig = false;
@@ -122,7 +123,8 @@ int main(int argc, char** argv) {
                          "  --ants-smoke-test  Verify ants, environment, pheromone trails and scene switches.\n"
                          "  --ants        Start the Ant Colony scene (also available in the Scene menu).\n"
                          "  --particle-life  Start Particle Life with an editable species interaction matrix.\n"
-                         "  --particle-life-smoke-test  Verify Particle Life controls, rendering and scene switches.\n"
+                         "  --particle-life-3d  Start 3D Particle Life with GPU compute and an orbit camera.\n"
+                         "  --particle-life-smoke-test  Verify 2D/3D Particle Life, GPU rendering and scene switches.\n"
                          "  --render-preview  Show the procedural renderer preview.\n"
                          "  --config PATH  Load and remember settings in this file.\n"
                          "  --no-config   Use defaults without reading or writing settings.\n"
@@ -152,6 +154,8 @@ int main(int argc, char** argv) {
             startAnts = true;
         } else if (argument == "--particle-life") {
             startParticleLife = true;
+        } else if (argument == "--particle-life-3d") {
+            startParticleLife3d = true;
         } else if (argument == "--particle-life-smoke-test") {
             particleLifeSmokeTest = true;
         } else if (argument == "--render-preview") {
@@ -180,7 +184,8 @@ int main(int argc, char** argv) {
     if (static_cast<int>(smokeTest) + static_cast<int>(renderSmokeTest) +
         static_cast<int>(boidsSmokeTest) + static_cast<int>(gpuSmokeTest) + static_cast<int>(renderPreview) +
         static_cast<int>(antsSmokeTest) + static_cast<int>(startAnts) +
-        static_cast<int>(startParticleLife) + static_cast<int>(particleLifeSmokeTest) > 1) {
+        static_cast<int>(startParticleLife) + static_cast<int>(startParticleLife3d) +
+        static_cast<int>(particleLifeSmokeTest) > 1) {
         std::cerr << "Choose only one application mode.\n";
         return 2;
     }
@@ -201,7 +206,7 @@ int main(int argc, char** argv) {
         if (smokeTest) return app.runTriangle(shaders, true);
         if (renderSmokeTest || renderPreview) return app.runPreview(shaders, renderSmokeTest, config.get());
         return app.run(shaders, boidsSmokeTest, gpuSmokeTest, config.get(), startAnts, antsSmokeTest,
-                       startParticleLife, particleLifeSmokeTest);
+                       startParticleLife, particleLifeSmokeTest, startParticleLife3d);
     } catch (const std::exception& error) {
         const std::string message = std::string{"Application failed: "} + error.what();
         std::cerr << message << '\n';

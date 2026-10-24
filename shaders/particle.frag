@@ -2,6 +2,7 @@
 layout(location = 0) in vec3 color;
 layout(location = 1) in vec2 localPosition;
 layout(location = 2) flat in int dotMode;
+layout(location = 3) flat in int shadedDot;
 layout(location = 0) out vec4 outColor;
 layout(constant_id = 0) const bool smoothDots = false;
 float segmentDistance(vec2 p, vec2 a, vec2 b) {
@@ -36,5 +37,15 @@ void main() {
             discard;
         }
     }
-    outColor = vec4(color, coverage);
+    vec3 shadedColor = color;
+    if (dotMode == 1 && shadedDot != 0) {
+        // Screen-facing sphere shading makes overlapping 3D particles legible
+        // without adding geometry or changing the existing circular coverage.
+        vec3 normal = vec3(localPosition, sqrt(max(0.0, 1.0 - dot(localPosition, localPosition))));
+        vec3 light = normalize(vec3(-0.4, 0.6, 1.0));
+        float diffuse = max(0.0, dot(normal, light));
+        float highlight = pow(max(0.0, dot(normal, normalize(light + vec3(0, 0, 1)))), 24.0);
+        shadedColor = color * (0.30 + 0.70 * diffuse) + vec3(0.20 * highlight);
+    }
+    outColor = vec4(shadedColor, coverage);
 }

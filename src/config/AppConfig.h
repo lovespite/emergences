@@ -3,6 +3,7 @@
 #include <array>
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace emergences::config {
@@ -52,6 +53,7 @@ struct AntSettings {
 struct ParticleLifeSettings {
     int count = 2000;
     bool gpu = true;
+    bool threeDimensional = false;
     int seed = 12345;
     int speciesCount = 6;
     bool paused = false;
@@ -121,6 +123,8 @@ public:
     const std::filesystem::path& path() const noexcept { return path_; }
     const std::vector<std::string>& warnings() const noexcept { return warnings_; }
     const std::string& lastError() const noexcept { return lastError_; }
+    // Whether a key was present in the loaded or last saved file.
+    bool hasValue(std::string_view key) const;
     bool save();
 
 private:

@@ -28,7 +28,7 @@ struct ParticleLifeParameters {
     float maxSpeed{20.0F};
 };
 
-// Particle life on a periodic XZ plane. Matrix rows describe
+// Particle life on a periodic XZ plane or in a periodic 3D volume. Matrix rows describe
 // the receiving species, columns the source species; interactions may be
 // asymmetric. Borrowed views remain valid until their state is changed.
 class ParticleLifeScene {
@@ -55,6 +55,11 @@ public:
     [[nodiscard]] sim::BufferHandle stateBuffer() const noexcept;
     // Explicit diagnostic/transfer snapshot; never called by ordinary GPU steps.
     [[nodiscard]] std::vector<sim::Agent> readback() const;
+
+    [[nodiscard]] bool threeDimensional() const noexcept;
+    // Switching dimensions regenerates the seeded population and resets time,
+    // retaining parameters, matrix, backend and pause. Failure is atomic.
+    void setThreeDimensional(bool enabled);
 
     [[nodiscard]] const ParticleLifeParameters& parameters() const noexcept;
     // Finite ranges: radius (0,50], force [0,200], friction [0,30], repulsion
@@ -98,8 +103,8 @@ public:
 
     // Replace the particles and restart the clock. Requires matching lengths,
     // valid active species, unique IDs, finite fields, positive size, RGB in
-    // [0,1], XZ positions in [-50,50), Y position/velocity zero and velocity
-    // magnitude <= maxSpeed. Display colors are assigned from speciesColor.
+    // [0,1], positions inside the world, and velocity magnitude <= maxSpeed.
+    // In 2D, Y position/velocity must be zero. Display colors come from speciesColor.
     // Validation failure leaves the entire scene unchanged; aliases are safe.
     void setAgents(std::span<const sim::Agent> agents, std::span<const std::uint8_t> species);
 
@@ -112,11 +117,13 @@ public:
 private:
     void step();
     void resetClock() noexcept;
-    void resetPopulation(std::size_t count, std::size_t speciesCount, std::uint32_t seed);
+    void resetPopulation(std::size_t count, std::size_t speciesCount, std::uint32_t seed,
+                         bool threeDimensional);
 
     ParticleLifeParameters parameters_;
     std::uint32_t seed_;
     std::size_t speciesCount_{6};
+    bool threeDimensional_{false};
     sim::World world_{{-WorldHalfExtent, -1.0F, -WorldHalfExtent},
                       {WorldHalfExtent, 1.0F, WorldHalfExtent}, sim::BoundaryMode::Wrap};
     std::array<float, MaxSpecies * MaxSpecies> matrix_{};

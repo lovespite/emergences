@@ -12,51 +12,72 @@ layout(std430, binding = 0) readonly buffer Previous { Agent previous[]; };
 layout(std430, binding = 1) writeonly buffer Next { Agent next[]; };
 layout(std430, binding = 2) readonly buffer Species { uint species[]; };
 layout(std430, binding = 3) readonly buffer Matrix { float interactions[]; };
+layout(std430, binding = 4) buffer Counts { uint cellCounts[]; };
+layout(std430, binding = 5) buffer Offsets { uint cellOffsets[]; };
+layout(std430, binding = 6) buffer Cursors { uint cellCursors[]; };
+layout(std430, binding = 7) buffer Indices { uint groupedIndices[]; };
+layout(std430, binding = 8) buffer Blocks { uint blockSums[]; };
 layout(push_constant) uniform Push {
-    uvec4 counts; // particles, stage (0 evolve, 1 clamp)
+    uvec4 counts; // particles, cells, stage, three-dimensional
+    uvec4 dimensions; // xyz, scan block count
     vec4 dynamics; // dt, damping, maximum speed, unused
     vec4 interaction; // radius, force, repulsion, core ratio
+    vec4 cellWidth;
 } pc;
 
-shared vec2 tilePositions[128];
-shared uint tileIds[128];
-shared uint tileSpecies[128];
+shared uint scanValues[128];
 shared float matrix[64];
 
-vec2 displacement(vec2 from, vec2 to) {
-    vec2 delta = to - from;
+ivec3 cellOf(vec3 position) {
+    return clamp(ivec3(floor((position + 50.0) / pc.cellWidth.xyz)),
+        ivec3(0), ivec3(pc.dimensions.xyz) - 1);
+}
+uint cellIndex(ivec3 cell) {
+    return uint(cell.x) + pc.dimensions.x * (uint(cell.y) + pc.dimensions.y * uint(cell.z));
+}
+int adjacent(int center, int offset, int dimension) {
+    // A one- or two-cell periodic axis must not visit the same cell twice.
+    if ((dimension == 1 && offset != 0) || (dimension == 2 && offset == 1)) return -1;
+    return (center + offset + dimension) % dimension;
+}
+vec3 displacement(vec3 from, vec3 to) {
+    vec3 delta = to - from;
     // Keep the CPU's signed half-period ties at exactly +50 / -50.
-    for (int axis = 0; axis < 2; ++axis) {
+    for (int axis = 0; axis < 3; ++axis) {
         if (delta[axis] > 50.0) delta[axis] -= 100.0;
         else if (delta[axis] < -50.0) delta[axis] += 100.0;
     }
+    if (pc.counts.w == 0u) delta.y = 0.0;
     return delta;
 }
-
-vec2 overlapDirection(uint receiver, uint source) {
+vec3 overlapDirection(uint receiver, uint source) {
     uint low = min(receiver, source), high = max(receiver, source);
     uint hash = low * 0x9E3779B9u ^ high * 0x85EBCA6Bu;
     hash ^= hash >> 16u;
     hash *= 0x7FEB352Du;
     hash ^= hash >> 15u;
+    float sign = receiver < source ? 1.0 : -1.0;
+    if (pc.counts.w != 0u) {
+        const vec3 axes[6] = vec3[6](vec3(1, 0, 0), vec3(-1, 0, 0),
+            vec3(0, 1, 0), vec3(0, -1, 0), vec3(0, 0, 1), vec3(0, 0, -1));
+        return axes[hash % 6u] * sign;
+    }
     const float diagonal = 0.7071067811865475;
-    const vec2 directions[8] = vec2[8](
-        vec2(1, 0), vec2(diagonal, diagonal), vec2(0, 1), vec2(-diagonal, diagonal),
-        vec2(-1, 0), vec2(-diagonal, -diagonal), vec2(0, -1), vec2(diagonal, -diagonal));
-    return directions[hash % 8u] * (receiver < source ? 1.0 : -1.0);
+    const vec3 directions[8] = vec3[8](
+        vec3(1, 0, 0), vec3(diagonal, 0, diagonal), vec3(0, 0, 1), vec3(-diagonal, 0, diagonal),
+        vec3(-1, 0, 0), vec3(-diagonal, 0, -diagonal), vec3(0, 0, -1), vec3(diagonal, 0, -diagonal));
+    return directions[hash % 8u] * sign;
 }
-
 float radialForce(float distance, float attraction) {
     if (distance >= 1.0) return 0.0;
     float coreRatio = pc.interaction.w;
     if (distance < coreRatio) return pc.interaction.z * (distance / coreRatio - 1.0);
     return attraction * max(0.0, 1.0 - abs(2.0 * distance - 1.0 - coreRatio) / (1.0 - coreRatio));
 }
-
-vec2 limitSpeed(vec2 velocity) {
-    float scale = max(abs(velocity.x), abs(velocity.y));
+vec3 limitSpeed(vec3 velocity) {
+    float scale = max(max(abs(velocity.x), abs(velocity.y)), abs(velocity.z));
     if (scale == 0.0) return velocity;
-    vec2 scaled = velocity / scale;
+    vec3 scaled = velocity / scale;
     float scaledLength = length(scaled);
     float maximum = pc.dynamics.z;
     // The CPU validates snapshots with a double-precision length. A small
@@ -65,11 +86,9 @@ vec2 limitSpeed(vec2 velocity) {
     if (scale * scaledLength > safeMaximum) return (scaled / scaledLength) * safeMaximum;
     return velocity;
 }
-
 float wrapPosition(float value) {
     if (value >= -50.0 && value < 50.0) return value;
-    // Fast single-period folding also avoids cancellation around the lower
-    // boundary for normal fixed steps. The fallback supports larger dt values.
+    // Fast single-period folding avoids cancellation around the lower boundary.
     if (value >= 50.0 && value < 150.0) return value - 100.0;
     if (value < -50.0 && value >= -150.0) {
         return min(value + 100.0, uintBitsToFloat(floatBitsToUint(50.0) - 1u));
@@ -78,66 +97,116 @@ float wrapPosition(float value) {
                  uintBitsToFloat(floatBitsToUint(50.0) - 1u));
 }
 
-void main() {
-    uint index = gl_GlobalInvocationID.x;
+// The scan and scatter assign exactly one slot per particle. Cells can contain
+// the entire population; dense clusters never hit a fixed occupancy cutoff.
+void scanBlock(uint index) {
     uint lane = gl_LocalInvocationID.x;
-    bool inRange = index < pc.counts.x;
-    if (pc.counts.y == 1u) {
-        if (inRange) {
-            Agent self = previous[index];
-            self.velocity.xz = limitSpeed(self.velocity.xz);
-            next[index] = self;
-        }
-        return;
-    }
-
-    // Padded lanes still participate in every shared-memory barrier.
-    Agent self = previous[min(index, pc.counts.x - 1u)];
-    uint row = species[min(index, pc.counts.x - 1u)] * 8u;
-    if (lane < 64u) matrix[lane] = interactions[lane];
-    precise vec2 acceleration = vec2(0.0);
-    precise vec2 correction = vec2(0.0);
-    float radiusSquared = pc.interaction.x * pc.interaction.x;
-
-    // Tiled all-pairs evaluation has no occupancy limits or neighbor cutoff.
-    // In dense late-stage clusters, each position is loaded from global memory
-    // once per workgroup and reused by all 128 receiving particles.
-    for (uint tile = 0u; tile < pc.counts.x; tile += 128u) {
-        uint source = tile + lane;
-        if (source < pc.counts.x) {
-            tilePositions[lane] = previous[source].position.xz;
-            tileIds[lane] = previous[source].id;
-            tileSpecies[lane] = species[source];
-        }
+    uint count = index < pc.counts.y ? cellCounts[index] : 0u;
+    scanValues[lane] = count;
+    barrier();
+    for (uint offset = 1u; offset < 128u; offset *= 2u) {
+        uint addend = lane >= offset ? scanValues[lane - offset] : 0u;
         barrier();
-        if (inRange && pc.interaction.y > 0.0) {
-            uint tileCount = min(128u, pc.counts.x - tile);
-            for (uint other = 0u; other < tileCount; ++other) {
-                if (tile + other == index) continue;
-                vec2 delta = displacement(self.position.xz, tilePositions[other]);
-                float distanceSquared = dot(delta, delta);
-                if (distanceSquared > radiusSquared) continue;
-                float distance = sqrt(distanceSquared);
-                vec2 direction = distance > 0.0 ? delta / distance
-                    : overlapDirection(self.id, tileIds[other]);
-                float force = radialForce(distance / pc.interaction.x, matrix[row + tileSpecies[other]]);
-                // Compensated float summation remains portable to GPUs without
-                // float64 while reducing error relative to CPU double sums.
-                precise vec2 contribution = direction * (force * pc.interaction.y);
-                precise vec2 adjusted = contribution - correction;
-                precise vec2 updated = acceleration + adjusted;
-                correction = (updated - acceleration) - adjusted;
-                acceleration = updated;
+        scanValues[lane] += addend;
+        barrier();
+    }
+    if (index < pc.counts.y) cellOffsets[index] = scanValues[lane] - count;
+    if (lane == 127u) blockSums[gl_WorkGroupID.x] = scanValues[lane];
+}
+
+void evolve(uint index) {
+    Agent self = previous[index];
+    uint row = species[index] * 8u;
+    precise vec3 acceleration = vec3(0.0);
+    precise vec3 correction = vec3(0.0);
+    float radiusSquared = pc.interaction.x * pc.interaction.x;
+    ivec3 center = cellOf(self.position);
+    if (pc.interaction.y > 0.0) for (int dz = -1; dz <= 1; ++dz) {
+        int z = adjacent(center.z, dz, int(pc.dimensions.z));
+        if (z < 0) continue;
+        for (int dy = -1; dy <= 1; ++dy) {
+            int y = adjacent(center.y, dy, int(pc.dimensions.y));
+            if (y < 0) continue;
+            for (int dx = -1; dx <= 1; ++dx) {
+                int x = adjacent(center.x, dx, int(pc.dimensions.x));
+                if (x < 0) continue;
+                uint cell = cellIndex(ivec3(x, y, z));
+                uint end = cellOffsets[cell] + cellCounts[cell];
+                for (uint slot = cellOffsets[cell]; slot < end; ++slot) {
+                    uint other = groupedIndices[slot];
+                    if (other == index) continue;
+                    vec3 delta = displacement(self.position, previous[other].position);
+                    float distanceSquared = dot(delta, delta);
+                    if (distanceSquared > radiusSquared) continue;
+                    float distance = sqrt(distanceSquared);
+                    vec3 direction = distance > 0.0 ? delta / distance
+                        : overlapDirection(self.id, previous[other].id);
+                    float force = radialForce(distance / pc.interaction.x, matrix[row + species[other]]);
+                    // Compensated float summation reduces drift from the CPU's
+                    // double sums without requiring optional GPU float64.
+                    precise vec3 contribution = direction * (force * pc.interaction.y);
+                    precise vec3 adjusted = contribution - correction;
+                    precise vec3 updated = acceleration + adjusted;
+                    correction = (updated - acceleration) - adjusted;
+                    acceleration = updated;
+                }
             }
         }
-        barrier();
     }
-    if (inRange) {
-        precise vec2 velocity = (self.velocity.xz + acceleration * pc.dynamics.x) * pc.dynamics.y;
-        self.velocity.xz = limitSpeed(velocity);
-        precise vec2 position = self.position.xz + self.velocity.xz * pc.dynamics.x;
-        self.position.x = wrapPosition(position.x);
-        self.position.z = wrapPosition(position.y);
-        next[index] = self;
+    precise vec3 velocity = (self.velocity + acceleration * pc.dynamics.x) * pc.dynamics.y;
+    if (pc.counts.w == 0u) velocity.y = 0.0;
+    self.velocity = limitSpeed(velocity);
+    precise vec3 position = self.position + self.velocity * pc.dynamics.x;
+    self.position = vec3(wrapPosition(position.x), pc.counts.w != 0u ? wrapPosition(position.y) : 0.0,
+                         wrapPosition(position.z));
+    next[index] = self;
+}
+
+void main() {
+    uint index = gl_GlobalInvocationID.x;
+    uint stage = pc.counts.z;
+    if (stage == 0u) {
+        if (index < pc.counts.y) cellCounts[index] = 0u;
+    } else if (stage == 1u) {
+        if (index < pc.counts.x) atomicAdd(cellCounts[cellIndex(cellOf(previous[index].position))], 1u);
+    } else if (stage == 2u) {
+        scanBlock(index);
+    } else if (stage == 3u) {
+        if (index == 0u) {
+            uint prefix = 0u;
+            for (uint block = 0u; block < pc.dimensions.w; ++block) {
+                uint count = blockSums[block];
+                blockSums[block] = prefix;
+                prefix += count;
+            }
+        }
+    } else if (stage == 4u) {
+        if (index < pc.counts.y) {
+            cellOffsets[index] += blockSums[index / 128u];
+            cellCursors[index] = cellOffsets[index];
+        }
+    } else if (stage == 5u) {
+        if (index < pc.counts.x) {
+            uint cell = cellIndex(cellOf(previous[index].position));
+            groupedIndices[atomicAdd(cellCursors[cell], 1u)] = index;
+        }
+    } else if (stage == 6u) {
+        // Padded invocations participate in the matrix upload barrier too.
+        uint lane = gl_LocalInvocationID.x;
+        if (lane < 64u) matrix[lane] = interactions[lane];
+        barrier();
+        if (index < pc.counts.x) {
+            // Nearby receivers share neighbor ranges and memory accesses. Keep
+            // output indexed by the original particle so IDs/species and the
+            // renderer retain their stable ordering. Zero force skips the grid.
+            uint receiver = pc.interaction.y > 0.0 ? groupedIndices[index] : index;
+            evolve(receiver);
+        }
+    } else if (stage == 7u) {
+        if (index < pc.counts.x) {
+            Agent self = previous[index];
+            self.velocity = limitSpeed(self.velocity);
+            next[index] = self;
+        }
     }
 }
