@@ -51,7 +51,7 @@ endif()
 
 if(EMERGENCES_BUILD_APP)
     add_executable(emergences main.cpp BoidsApp.cpp LiveBoids.cpp RenderPreview.cpp
-        ../ants/AntPresentation.cpp ../particle_life/ParticleLifePresentation.cpp)
+        ../ants/AntPresentation.cpp ../ants3d/Ant3DPresentation.cpp ../particle_life/ParticleLifePresentation.cpp ../slime_mold/SlimeMoldPresentation.cpp)
     if(WIN32)
         set_target_properties(emergences PROPERTIES WIN32_EXECUTABLE TRUE)
         target_link_libraries(emergences PRIVATE user32 shell32)
@@ -61,7 +61,7 @@ if(EMERGENCES_BUILD_APP)
         endif()
     endif()
     target_link_libraries(emergences PRIVATE emergences::core emergences::boids emergences::ants
-        emergences::particle_life emergences::imgui)
+        emergences::particle_life emergences::ants3d emergences::slime_mold emergences::imgui)
     target_compile_definitions(emergences PRIVATE
         EMERGENCES_VERSION="${PROJECT_VERSION}"
         EMERGENCES_WINDOW_TITLE_PREFIX="Emergences v${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR} - "
@@ -71,7 +71,7 @@ if(EMERGENCES_BUILD_APP)
         VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:emergences>")
     emergences_target_defaults(emergences)
     emergences_add_shaders(emergences smoke/triangle.vert smoke/triangle.frag
-        particle.vert particle.frag grid.vert grid.frag compute/boids.comp compute/particle_life.comp)
+        particle.vert particle.frag mesh.vert mesh.frag grid.vert grid.frag compute/boids.comp compute/particle_life.comp compute/slime_mold.comp)
 
     # Run even when no C++ source changed, so the distributed reference stays
     # current after documentation edits. Never overwrite the user's .conf file.
@@ -92,8 +92,10 @@ if(EMERGENCES_BUILD_APP)
         add_test(NAME vulkan_boids COMMAND emergences --boids-smoke-test)
         add_test(NAME vulkan_gpu_boids COMMAND emergences --gpu-smoke-test)
         add_test(NAME vulkan_ants COMMAND emergences --ants-smoke-test)
+        add_test(NAME vulkan_ants3d COMMAND emergences --ants-3d-smoke-test)
+        add_test(NAME vulkan_slime_mold COMMAND emergences --slime-mold-smoke-test)
         add_test(NAME vulkan_particle_life COMMAND emergences --particle-life-smoke-test)
-        set_tests_properties(vulkan_triangle vulkan_particles vulkan_boids vulkan_gpu_boids vulkan_ants vulkan_particle_life PROPERTIES
+        set_tests_properties(vulkan_triangle vulkan_particles vulkan_boids vulkan_gpu_boids vulkan_ants vulkan_ants3d vulkan_particle_life vulkan_slime_mold PROPERTIES
             TIMEOUT 60 LABELS "gpu;smoke"
             RUN_SERIAL TRUE
             FAIL_REGULAR_EXPRESSION "\\[Vulkan validation\\];Validation Error")
@@ -105,6 +107,16 @@ if(EMERGENCES_BUILD_APP)
         add_dependencies(emergences_gpu_tests emergences_shaders)
         add_test(NAME boids_gpu_compute COMMAND emergences_gpu_tests)
         set_tests_properties(boids_gpu_compute PROPERTIES TIMEOUT 120 LABELS "gpu;sim;boids"
+            RUN_SERIAL TRUE FAIL_REGULAR_EXPRESSION "\\[Vulkan validation\\];Validation Error")
+
+        add_executable(emergences_slime_mold_gpu_tests ../slime_mold/tests/SlimeMoldGpuTests.cpp)
+        target_link_libraries(emergences_slime_mold_gpu_tests PRIVATE emergences::core emergences::slime_mold)
+        emergences_target_defaults(emergences_slime_mold_gpu_tests)
+        target_compile_definitions(emergences_slime_mold_gpu_tests PRIVATE
+            EMERGENCES_SHADER_DIRECTORY="${PROJECT_BINARY_DIR}/$<CONFIG>/shaders")
+        add_dependencies(emergences_slime_mold_gpu_tests emergences_shaders)
+        add_test(NAME slime_mold_gpu_compute COMMAND emergences_slime_mold_gpu_tests)
+        set_tests_properties(slime_mold_gpu_compute PROPERTIES TIMEOUT 120 LABELS "gpu;sim;slime_mold"
             RUN_SERIAL TRUE FAIL_REGULAR_EXPRESSION "\\[Vulkan validation\\];Validation Error")
 
         add_executable(emergences_particle_life_gpu_tests ../particle_life/tests/ParticleLifeGpuTests.cpp)

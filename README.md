@@ -1,8 +1,8 @@
 # emergences · 涌现模拟
 
-基于 C++20 和 Vulkan 的涌现模拟项目。项目按通用渲染层、通用模拟层和具体场景三层组织，已接入 Boids 鸟群、Ant Colony 蚁群与 Particle Life 三个场景。完整方案见 [PLAN.md](PLAN.md)。
+基于 C++20 和 Vulkan 的涌现模拟项目。项目按通用渲染层、通用模拟层和具体场景三层组织，场景菜单提供 Boids 鸟群、Ant Colony 蚁群、Particle Life 与 Slime Mold 黏菌网络四个入口；蚁群包含独立的 2D 与 3D 模拟。完整方案见 [PLAN.md](PLAN.md)。
 
-**Phase 1–4 已实现，并接入蚁群与 Particle Life 场景。** 默认应用运行 GPU compute Boids，可在面板切回 CPU 使用光标吸引 / 排斥，也可通过 **Scene** 菜单切换到蚁群或 Particle Life。Boids 两种后端共用规则参数、固定步长和显示控制。Boids GPU 使用均匀网格和计算着色器，显示结果直接绑定 Vulkan 粒子渲染；GPU 初始化失败时回退 CPU，并在面板显示原因。蚁群采用 CPU 模拟，支持随机地形障碍、随机食物、敌对生物追踪、觅食归巢与双信息素轨迹。Particle Life 通过可编辑的物种吸引／排斥矩阵模拟粒子聚集与追逐，默认优先 GPU，支持保留状态切换 CPU / GPU。模拟与场景库仍可独立于 Vulkan 构建和测试。
+**Phase 1–4 已实现，并接入蚁群、Particle Life 与黏菌网络场景。** 默认应用运行 GPU compute Boids，可在面板切回 CPU 使用光标吸引 / 排斥，也可通过 **Scene** 菜单切换到蚁群、Particle Life 或 Slime Mold。Boids 两种后端共用规则参数、固定步长和显示控制。Boids GPU 使用均匀网格和计算着色器，显示结果直接绑定 Vulkan 粒子渲染；GPU 初始化失败时回退 CPU，并在面板显示原因。蚁群采用 CPU 模拟，支持随机地形障碍、随机食物、敌对生物追踪、觅食归巢与双信息素轨迹。Particle Life 通过可编辑的物种吸引／排斥矩阵模拟粒子聚集与追逐，默认优先 GPU，支持保留状态切换 CPU / GPU。Slime Mold 默认在 GPU 上执行感知、移动、沉积与轨迹扩散衰减，并直接绘制 GPU 轨迹场。模拟与场景库仍可独立于 Vulkan 构建和测试。
 
 ## 构建前置
 
@@ -15,7 +15,19 @@
 
 安装支持 C++20 的 Apple Command Line Tools / Xcode 及 macOS SDK、CMake ≥ 3.24、Ninja，以及 [LunarG macOS Vulkan SDK](https://vulkan.lunarg.com/doc/view/latest/mac/getting_started.html)（含 `glslc`、Vulkan Loader 和 MoltenVK）。本机使用 Apple Clang 21、macOS SDK 27.0 和 Vulkan SDK 1.4.363.0；构建时将最低运行系统设为 macOS 26.0。OpenMP 为可选依赖，未检测到支持时 CPU 模拟自动使用串行路径。
 
-在项目根目录运行；若 SDK 未安装到系统搜索路径，先执行其 `setup-env.sh`，例如 `source "$HOME/VulkanSDK/1.4.363.0/setup-env.sh"`（路径按实际安装版本调整）：
+在项目根目录运行 `build.sh`；若 SDK 未安装到系统搜索路径，先执行其 `setup-env.sh`，例如 `source "$HOME/VulkanSDK/1.4.363.0/setup-env.sh"`（路径按实际安装版本调整）：
+
+```sh
+./build.sh                                  # 默认构建 Release
+./build.sh --configuration Debug --test      # 构建全部目标并运行无 GPU 测试
+./build.sh --run                             # 构建成功后启动程序
+./build.sh --jobs 4                          # 限制并行任务数（默认最多 8 个）
+./build.sh --help                            # 查看参数说明
+```
+
+脚本支持从任意工作目录调用，兼容 macOS 自带 Bash。Release 产物位于 `build/macos-release/Release/`，Debug 产物位于 `build/macos-debug/Debug/`，目录内包含 `emergences`、`shaders/` 和 `emergences.conf.example`。重复运行会增量构建；默认只构建应用及其依赖，`--test` 构建全部目标并跳过带 `gpu` 标签的测试。构建或测试失败会立即停止并返回非零退出码；`--run` 在前面步骤成功后从产物目录启动程序，并等待程序退出。
+
+也可手动执行等价的 CMake 构建，以下使用独立的 `build/macos-check` 目录：
 
 ```sh
 cmake -S . -B build/macos-check -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_DEPLOYMENT_TARGET=26.0
@@ -107,9 +119,32 @@ cmake --build --preset debug
 - **F11** 或面板顶部的 **Fullscreen (F11)** 开关切换全屏；使用窗口当前所在的显示器，退出全屏后恢复窗口位置、尺寸及最大化状态。
 - **F1** 显示 / 隐藏控制面板，隐藏后模拟和相机操作继续，再按一次即可恢复。全屏开关和 F1 同样适用于 `--render-preview`。
 
+### 黏菌网络场景（Slime Mold）
+
+在 **Scene → Slime Mold** 切换，或运行 `./build/macos-debug/Debug/emergences --slime-mold`（Windows：`emergences.exe --slime-mold`）。默认 GPU、30000 个体、5 个营养源，在 100×100 的 XZ 周期平面上生成不断重组的轨迹网络。`--no-config` 可忽略历史设置。场景设置保存在 `scenarios.slime_mold.*`，启动场景名为 `app.scenario = slime_mold`。
+
+- **Behavior**：速度、探针距离/夹角、转向、游走、沉积、扩散、挥发和营养吸引强度；支持 0–100000 个体。
+- **World**：0–12 个持续营养源、种子及重新生成；0 个营养源用于观察自由网络。改变个体数、种子或营养源数量会重建世界、清空轨迹和时钟。
+- **View**：轨迹亮度、个体叠加、营养标记、抗锯齿与相机重置。亮度和显示开关不改变模型状态。
+- CPU / GPU 切换保留位置、方向、轨迹场、参数、种子、暂停状态和完整步数；暂停支持单步。切到其他场景后黏菌停止演化，返回继续。GPU 初始化失败时回退 CPU 并显示原因。
+
+采用受 [Jeff Jones 的 Physarum 粒子模型](https://uwe-repository.worktribe.com/output/980579/characteristics-of-pattern-formation-and-evolution-in-approximations-of-physarum-transport-networks) 启发的简化趋化模型：前、左、右三个探针读取旧轨迹和营养场，个体转向移动并沉积；随后对全场执行周期九点均值扩散和指数衰减。营养源是不会被消耗的固定吸引点。此实现允许个体重叠，未实现生物生长、排他占位或最短路径求解，不声称精确复现原论文。
+
+`src/scenarios/slime_mold/` 中的场景和 GPU 适配器不依赖 Vulkan 类型，复用 `sim::ComputeDevice`。`shaders/compute/slime_mold.comp` 的 clear → sense/move/deposit → diffuse/decay 各阶段由现有设备接口同步；个体与轨迹均使用双缓冲，32 位整数原子累加沉积（精度 1/4096，合法参数下即使十万个体集中一格也不会溢出），浓度上限 1000。显示阶段生成 GPU 粒子缓冲，用现有渲染器新增的方格模式拼成连续轨迹图。普通演化、调参和显示不回读位置或轨迹，只有显式快照和切回 CPU 才下载；计算提交仍采用框架现有的同步 fence 路径。复杂度为 O(个体数 + 网格格数)，不执行个体两两邻域查询。
+
+CPU 与 GPU 采用相同种子、逐个体/逐步整数哈希和固定 60 Hz 步长；浮点感知分支可放大细微数值差异，不保证长时间轨迹逐位相同。测试覆盖质量守恒、周期接缝、探针转向、沉积竞争、浓度上限、状态传输、失败时资源保留及直接 GPU 渲染：
+
+```sh
+cmake --build build/macos-debug --parallel 6
+VK_LAYER_VALIDATE_SYNC=1 ctest --test-dir build/macos-debug -R slime_mold --output-on-failure
+# GPU 测试须在配置时启用 -DEMERGENCES_ENABLE_GPU_TESTS=ON；CPU 模型也可独立构建。
+```
+
+本机验收（2026-10-25，Apple M1 Pro / MoltenVK）：Debug 与 Release 的 `config_settings`、`slime_mold_scene`、`slime_mold_backend`、`vulkan_slime_mold`、`slime_mold_gpu_compute` 各 5/5 通过；无 Vulkan Release 构建中的配置和黏菌测试 3/3 通过。Debug 其余 10 项 GPU / 窗口 / 呈现回归全部通过，GPU 检查开启同步校验，无 Vulkan 校验诊断。默认 30000 个体额外演化 60 秒模拟时间，导出轨迹图确认网络形成，浓度有限且保持范围；数据与图像位于 `build/slime-mold-verification/`。Release 的 23 项非 GPU 回归在修复 CPU 扩散索引并专项复测后各项通过。Debug 非 GPU 回归中原有 `ants3d_scene` / `ants3d_terrain` 分别触发 180 / 30 秒超时，其 Release 版本通过；未修改这些测试的超时。Mac 锁屏期间无法执行手动鼠标验收，呈现检查通过程序驱动控件完成。
+
 ### 蚁群场景
 
-在面板顶部选择 **Scene → Ant Colony**，或使用 `emergences.exe --ants` 直接启动蚁群。各场景共用窗口、相机操作和呈现框架；切换时保留各自的个体、参数、暂停状态与模拟时钟，未显示的场景停止推进。
+在面板顶部选择 **Scene → Ant Colony → Dimensions → 2D plane**，或使用 `emergences.exe --ants` 直接启动 2D 蚁群。**Dimensions** 与 Particle Life 使用相同的下拉切换方式，可选择 **2D plane / 3D terrain**。两种蚁群分别保留个体、参数、暂停状态与模拟时钟，切换维度不会重新生成世界，未显示的模拟停止推进；本次运行中还分别保留相机视角，从其他场景返回 **Ant Colony** 时恢复上次使用的维度。
 
 蚁群默认包含 **1500 只蚂蚁**，数量可调至 0–20000，采用 CPU 固定步长模拟。世界位于 `[-80,80]` 的 XZ 平面，尺寸为 **160×160**，长宽均为原来的两倍；信息素使用 256×256 网格，保持原有空间精度。蚁巢在中央；种子生成六片食物和三个敌对生物。敌对生物每 **0.5 秒**重新评估 **40 单位**范围内的蚁群，以半径 **6 单位**的邻域统计密度，优先追踪密集区域，并通过 **A\*** 寻路绕过石块。无目标时继续游走，蚁巢周围半径 **9 单位**保留保护范围。蚂蚁探索、拾取食物并送回蚁巢，接近敌对生物时转向避让；当前敌对生物只影响行进路线，没有战斗或死亡机制。
 
@@ -123,6 +158,34 @@ cmake --build --preset debug
 - **World**：`World seed` 输入框是待应用的草稿；点击 **Generate from seed** 才生成并保存该种子的地形、食物与敌对生物。**Random world** 选择新种子并立即生成世界。**Obstacles** 调整石块数量；改变障碍或蚂蚁数量会按当前种子重新开始。**Food interval (s)** 调整食物补充间隔，并显示下次补充倒计时和当前食物片数 / 24。
 - **Behavior**：调整移动速度、传感距离 / 角度、转向、探索扰动，以及信息素沉积、挥发、扩散；**Clear pheromones** 只清除两种轨迹，保留当前世界和时钟。
 - **View**：分别显示蓝色归巢信息素和绿色食物信息素，调整蚂蚁大小、抗锯齿、网格 / 边界及相机。面板同时显示携带食物的蚂蚁数、已送达食物、剩余食物和敌对生物数量。
+
+### 3D 蚁群场景
+
+选择 **Scene → Ant Colony → Dimensions → 3D terrain**，或运行 `emergences --ants-3d`。这是独立的 CPU 模拟：与原有 2D 蚁群分别保存数量、种子、暂停状态、食物、轨迹与模拟时钟；切走后停止推进，切回后继续。`--ants` 仍直接启动 2D 蚁群，两种维度在 UI 中统一使用 **Ant Colony** 入口。
+
+3D 地图覆盖 `[-128,128]` 的 XZ 平面，尺寸由 **96×96** 扩大到 **256×256**，面积约为原来的 **7.1 倍**。地图参考 [Minecraft 的种子与梯度噪声生成思路](https://learn.microsoft.com/en-us/minecraft/creator/documents/world-generation?view=minecraft-bedrock-stable)，通过多频率 [Perlin 噪声](https://mrl.cs.nyu.edu/~perlin/noise/)叠加宽阔起伏、山脊与局部细节，并按地形高度和坡度着色。本实现采用连续实体三角网格，只借鉴生成思路，不复刻 Minecraft 的完整体素世界算法。每个世界种子生成不同的山丘、洞穴位置、蚁巢和食物布局，相同种子与参数可复现初始世界。初始八片食物分布在蚁巢附近及较远的探索区域。
+
+洞穴由 **四个大小不同的洞室、弯曲通道、侧向分支和三个洞口** 组成，上方覆盖不规则山体。洞穴位置随世界种子在较大范围内随机选取，避开水域、桥梁与地图边界，并为附近蚁巢保留可通行空间。洞壁、洞顶、洞口及世界边缘参与球体碰撞。关闭 **Show cave roofs** 可剖开山体与高处洞顶，保留低矮洞壁以观察内部布局。
+
+每个种子还会生成贯穿地图的弯曲河流、**两座桥** 和 **三个水坑**。河流与水坑不能直接穿越，桥面与两岸坡道连通；蚂蚁探索时根据附近可行走地面绕开障碍，搬运食物时使用共享的地形寻路图返回蚁巢。食物只放在蚁巢可达的位置，水面、河床、桥面与碰撞范围随种子一起重建。
+
+蚂蚁出巢后独立随机探索，不预先知道食物位置。只有进入食物中心 **10 个世界单位**以内，且与食物之间存在直接可行走路径时，才会被吸引并靠近拾取；洞壁、洞顶及水域会阻断这种感知。食物耗尽或超出感知距离后，蚂蚁恢复探索。每只蚂蚁的探索使用独立随机序列，远处尚未发现的食物不会改变其行进路线。
+
+默认 **600 只**，可调至 0–3000。每只蚂蚁有半径 **0.28** 的球形碰撞体，空间网格筛选邻近个体，再在三维空间解算接触，避免穿过地形和彼此重叠。渲染使用带头、胸、腹、六条腿和触角的立体网格，并随地面法线倾斜。模型的腿和触角为视觉细节，物理解算使用统一球体。
+
+蚂蚁统一为**黑色**，搬运食物时上方显示一个小绿点。初始个体在巢内隐藏排队，依次出巢；蚁巢的出口和入口默认各一个，可分别配置为 **1–4 个**，每个通道一次允许一只通过，多个通道可同时运行。送达食物后，个体进入 **5–30 个模拟秒**的随机冷却，期间不渲染、不参与碰撞，也不可点击；冷却结束后重新加入出巢队列。暂停或切换场景时冷却停止计时，同一世界种子可复现排队和冷却过程。
+
+- **Movement speed**：觅食速度默认 **4.7 世界单位 / 秒**，可调至 **0.5–20**，即时生效；搬运和出入巢速度同比例变化，冷却和食物生成计时保持不变。
+- **World → Nest exits / Nest entrances**：分别设置出口和入口数量。修改后按当前种子重新开始蚁群，清除选择与跟随，并更新蚁巢边缘的开口。
+- **World → Food spawn interval**：每隔 **1–120 个模拟秒**生成最多两片可达食物，默认 **10 秒**；食物点最多 **24 片**，优先复用耗尽的位置槽位。修改间隔会从当前时刻重新计时；暂停和切换到其他场景时停止计时，Reset 恢复最初八片食物。
+- **World → World seed**：输入种子后点击 **Generate from seed** 重建地图和蚁群；**Random map** 选择新种子并立即生成。生成后切回全图视角，清空已有轨迹、搬运统计与模拟时钟，保留数量、速度、通道数量、食物生成间隔和暂停状态。
+- **Collision → Show collision volumes**：显示青色碰撞球轮廓。
+- **Show cave roofs**：关闭后剖开洞顶，观察洞内蚂蚁；隐藏洞顶不改变物理碰撞。
+- **View**：轨迹、抗锯齿及全图、蚁巢、洞口、洞顶剖视、洞室内部和河流桥梁相机预设。点击场景后，**WASD** 按相机朝向在水平方向自由移动，**Q / E** 降低 / 升高，**Shift** 加速，**左键或右键拖动** 以相机自身为中心原地转头；中键平移、滚轮缩放。左键单击仍用于选择个体。编辑种子或操作面板时不会触发键盘移动。
+- **选择与跟随**：左键单击蚂蚁显示金色选中圆环，按 **Space** 开始跟随；未选中时，自动选择最近完成出巢且仍在外活动的蚂蚁。没有符合条件的个体时保持原视角。按 **F2** 切换第一、第三人称，也可在未跟随时预选模式。第一人称保持水平地平线，平滑眼高和转向，隐藏自身模型；第三人称从后上方跟随并显示自身模型，遇到地形遮挡时收近镜头。再次按 **Space** 或 **Esc** 返回进入跟随前的视角。跟随期间暂停自由相机操作；个体入巢冷却时自动退出跟随，保留选中状态以显示冷却倒计时。重置、改数量、改出入口数量或生成地图会清除选择。
+- **Paused / Step / Reset**：暂停、120 Hz 单步及按当前种子重放初始世界；调整数量也会按当前种子重新开始。
+
+3D 设置写入独立的 `scenarios.ants3d.*` 配置项，新增 `movement_speed`、`nest_exit_count`、`nest_entry_count` 和 `food_spawn_interval`；`scenarios.ants3d.seed` 同时保存地图与蚁群的世界种子，场景值为 `app.scenario = ants3d`。重启按种子重新生成初始世界，不保存当前个体位置或搬运进度。`--ants-3d-smoke-test`（或 `--ants-3d-smoke`）执行实体网格呈现、两种跟随视角、自动选择最新出巢个体、洞顶剖视、碰撞体显示、暂停／单步／重置、2D／3D 切换及 MSAA / 全屏检查；CPU 测试单独验证地形、个体碰撞、出入巢通道和定时食物生成。
 
 ### Particle Life 场景
 
@@ -190,7 +253,7 @@ view.agent_size = 0.45
 view.panel_visible = on
 ```
 
-支持空行、`#` / `;` 注释（包括行尾注释）、UTF-8 BOM 和 Windows 换行。布尔值使用 `on` / `off`；场景 `app.scenario` 为 `boids` / `ants` / `particle_life`，蚁群与 Particle Life 设置分别位于 `scenarios.ants.*` 和 `scenarios.particle_life.*`，其种子范围均为 0–2147483647。形状为 `arrow` / `dot`，颜色为 `direction` / `speed` / `density` / `solid`，边界 `scenarios.boids.boundary` 为 `wrap` / `bounce`。可编辑项及范围与面板一致；相机位于 `view.camera.*`，角度单位为弧度。可参考 [emergences.conf.example](emergences.conf.example)，或直接编辑首次运行生成的完整文件。
+支持空行、`#` / `;` 注释（包括行尾注释）、UTF-8 BOM 和 Windows 换行。布尔值使用 `on` / `off`；场景 `app.scenario` 为 `boids` / `ants` / `particle_life` / `ants3d`，两种蚁群与 Particle Life 设置分别位于 `scenarios.ants.*`、`scenarios.ants3d.*` 和 `scenarios.particle_life.*`，其种子范围均为 0–2147483647。形状为 `arrow` / `dot`，颜色为 `direction` / `speed` / `density` / `solid`，边界 `scenarios.boids.boundary` 为 `wrap` / `bounce`。可编辑项及范围与面板一致；相机位于 `view.camera.*`，角度单位为弧度。可参考 [emergences.conf.example](emergences.conf.example)，或直接编辑首次运行生成的完整文件。
 
 构建应用时会将 `emergences.conf.example` 同步到可执行文件旁，Debug / Release 均包含。示例逐项解释用途、取值范围、默认值和相关行为；只修改示例注释后再次构建也会更新副本。程序不会自动加载 `.example` 文件；要使用其示例值，可在关闭程序后复制为 `emergences.conf`，或复制为另一配置文件并用 `--config` 指定。构建不会覆盖个人的 `emergences.conf`。
 
@@ -259,7 +322,7 @@ cmake --build --preset sim-release
 ctest --preset sim-release
 ```
 
-`vs2022-sim` 使用独立目录 `build/sim-only` 并设置 `EMERGENCES_BUILD_APP=OFF`。`emergences::sim` 包含 World、SpatialHash、CpuSimulation、GpuSimulation、ComputeDevice 和可选的 RuleKernel 接口；`emergences::boids` 包含三规则、BoidsRuleKernel、BoidsGpu、BoidsScene、CursorIntervention / CursorRepel / CursorAttract；`emergences::ants` 包含纯 CPU 的 AntScene、食物 / 敌对生物状态与双信息素场；`emergences::particle_life` 包含 ParticleLifeScene 和仅依赖 ComputeDevice 抽象接口的 ParticleLifeGpu。三个场景库均传递链接模拟库，CPU 模拟与后端契约测试不需要 Vulkan。
+`vs2022-sim` 使用独立目录 `build/sim-only` 并设置 `EMERGENCES_BUILD_APP=OFF`。`emergences::sim` 包含 World、SpatialHash、CpuSimulation、GpuSimulation、ComputeDevice 和可选的 RuleKernel 接口；`emergences::boids` 包含三规则、BoidsRuleKernel、BoidsGpu、BoidsScene、CursorIntervention / CursorRepel / CursorAttract；`emergences::ants` 包含纯 CPU 的 AntScene、食物 / 敌对生物状态与双信息素场；`emergences::particle_life` 包含 ParticleLifeScene 和仅依赖 ComputeDevice 抽象接口的 ParticleLifeGpu。`emergences::ants3d` 包含独立的 Ant3DScene、山丘与洞穴 Terrain 及球体碰撞。四个场景库均传递链接模拟库，CPU 模拟与后端契约测试不需要 Vulkan。
 
 `EMERGENCES_ENABLE_OPENMP` 默认 `ON`，配置时检测到编译器支持就启用 OpenMP，没有支持时自动使用串行路径。设为 `OFF` 可验证不依赖 OpenMP 的兼容构建；该配置仍使用 Boids 三规则融合计算：
 
@@ -365,7 +428,7 @@ ctest --test-dir build-host-x64 -C Release --output-on-failure
 | `boids_gpu_compute` | 真实计算设备上的 CPU/GPU 规则对照、网格与边界、状态读回和十万个体计算检查 |
 | `particle_life_gpu_compute` | 真实计算设备上的 CPU / GPU 单步与连续步对照、周期边界、重合点、非对称矩阵、速度限制与状态切换；另提供 `--benchmark` 模式 |
 
-六个呈现测试会短暂创建窗口并自动缩放；窗口测试和计算对照测试也需要可用的桌面和 Vulkan 设备。CTest 在任何 `[Vulkan validation]` 消息（包括资源销毁时的消息）出现时失败；Loader 的一般诊断仍会输出。GPU 测试默认关闭。完整套件包含十六项无 Vulkan 配置 / 模拟 / 场景测试、`camera_math`、`window_fullscreen`、六项呈现测试和两项 GPU 计算测试，合计二十六项；单独模拟构建运行十六项测试。此处列出当前注册项，历史验收记录仍对应各自当时的实现与测试数量。
+六个呈现测试会短暂创建窗口并自动缩放；窗口测试和计算对照测试也需要可用的桌面和 Vulkan 设备。CTest 在任何 `[Vulkan validation]` 消息（包括资源销毁时的消息）出现时失败；Loader 的一般诊断仍会输出。GPU 测试默认关闭。完整应用构建注册 23 项非 GPU 测试、`window_fullscreen`、8 项呈现测试和 3 项 GPU 计算测试，合计 35 项；单独模拟构建（`EMERGENCES_BUILD_APP=OFF`）运行 21 项测试。此处列出当前注册项，历史验收记录仍对应各自当时的实现与测试数量。
 
 需要额外复查同步时，可在当前 PowerShell 会话设置 `$env:VK_LAYER_VALIDATE_SYNC = '1'` 后运行 `ctest --preset debug`，完成后以 `Remove-Item Env:VK_LAYER_VALIDATE_SYNC` 清除该会话设置。
 
@@ -374,12 +437,14 @@ ctest --test-dir build-host-x64 -C Release --output-on-failure
 | 位置 | 当前职责 |
 | --- | --- |
 | `src/config/` | 独立于 Vulkan 的点路径配置解析、校验与原子保存；支持设置记忆和注释保留 |
-| `src/core/` | Window / Context；带逐图像深度附件的 Swapchain；共享命令记录、双帧同步与呈现的 FrameRenderer；Pipeline / Buffer / Descriptor、VulkanComputeDevice；Camera、TriangleRenderer、ParticleRenderer、LineRenderer、ImGuiLayer |
+| `src/core/` | Window / Context；带逐图像深度附件的 Swapchain；共享命令记录、双帧同步与呈现的 FrameRenderer；Pipeline / Buffer / Descriptor、VulkanComputeDevice；Camera、TriangleRenderer、ParticleRenderer、MeshRenderer、LineRenderer、ImGuiLayer |
 | `src/sim/` | `Agent`、`World`、`Rule`、`Intervention`、`Simulation`、`MotionLimits`、`ComputeDevice`；`cpu/` 下为 SpatialHash、RuleKernel 与 CpuSimulation，`gpu/` 下为 GpuSimulation |
-| `src/scenarios/boids/` | 纯 CPU 的三规则、BoidsRuleKernel、BoidsScene、光标干预及测试；LiveBoids 管理 Boids / 蚁群 / Particle Life 切换并连接模拟 / 渲染 / 面板，保留程序化预览与呈现测试 |
+| `src/scenarios/boids/` | 纯 CPU 的三规则、BoidsRuleKernel、BoidsScene、光标干预及测试；LiveBoids 管理 Boids / 2D 蚁群 / 3D 蚁群 / Particle Life 切换并连接模拟 / 渲染 / 面板，保留程序化预览与呈现测试 |
 | `src/scenarios/ants/` | 无 Vulkan 依赖的 AntScene、双信息素场、随机地形、食物和敌对生物及测试；AntPresentation 负责蚁群面板、设置转换和渲染记录 |
+| `src/scenarios/ants3d/` | 独立的 Ant3DScene、带山丘和拱形洞穴的 Terrain、球体碰撞与空间网格、实体模型及面板；CPU 地形与碰撞测试 |
 | `src/scenarios/particle_life/` | 无 Vulkan 类型依赖的 ParticleLifeScene 与 ParticleLifeGpu，提供 CPU 周期邻域、GPU 状态管理、分段作用力及测试；ParticleLifePresentation 负责后端与作用矩阵面板、设置转换和 CPU 渲染记录 |
-| `shaders/` | `particle.*` 粒子、`grid.*` 辅助线、`smoke/triangle.*` 三角形，以及 `compute/boids.comp` / `compute/particle_life.comp` 空间网格计算着色器 |
+| `src/scenarios/slime_mold/` | 独立二维黏菌场景、CPU 对照与 GPU 驻留轨迹/个体、参数面板及后端/计算测试 |
+| `shaders/` | `particle.*` 粒子、`grid.*` 辅助线、`smoke/triangle.*` 三角形，以及 `compute/boids.comp` / `compute/particle_life.comp` 空间网格计算着色器和 `compute/slime_mold.comp` 轨迹场计算着色器 |
 | `cmake/` | 依赖获取与着色器编译辅助配置 |
 | `third_party/` | 第三方依赖说明；实际源码由 FetchContent 放入构建目录 |
 

@@ -33,6 +33,8 @@ public:
     [[nodiscard]] bool isFullscreen() const noexcept;
     [[nodiscard]] bool shouldClose() const;
     void requestClose();
+    // Applications can consume Escape for modal navigation before closing.
+    void setEscapeClosesWindow(bool enabled) noexcept { escapeClosesWindow_ = enabled; }
     [[nodiscard]] GLFWwindow* nativeHandle() const noexcept { return window_; }
 
 private:
@@ -48,6 +50,8 @@ private:
     int windowedHeight_ = 0;
     bool windowedMaximized_ = false;
     bool fullscreenTogglePending_ = false;
+    bool escapeClosesWindow_ = true;
+    bool escapeDown_ = false;
 };
 
 } // namespace emergences::core

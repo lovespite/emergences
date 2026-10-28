@@ -1,0 +1,86 @@
+#version 450
+layout(local_size_x = 128) in;
+struct Agent {
+    vec3 position; float size;
+    vec3 velocity; float heading;
+    vec3 color; uint id;
+};
+layout(std430, binding=0) readonly buffer InputAgents { Agent oldAgents[]; };
+layout(std430, binding=1) writeonly buffer OutputAgents { Agent newAgents[]; };
+layout(std430, binding=2) readonly buffer InputTrail { float oldTrail[]; };
+layout(std430, binding=3) writeonly buffer OutputTrail { float newTrail[]; };
+layout(std430, binding=4) buffer Deposits { uint deposits[]; };
+layout(std430, binding=5) readonly buffer Nutrients { float nutrients[]; };
+layout(std430, binding=6) writeonly buffer Display { Agent display[]; };
+layout(push_constant) uniform Constants {
+    uvec4 counts;
+    vec4 motion;
+    vec4 behavior;
+    vec4 field;
+    uvec4 random;
+} c;
+const float PI = 3.14159265358979323846;
+uint hash(uint x) {
+    x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15;
+    x *= 0x846ca68bu; x ^= x >> 16; return x;
+}
+vec2 wrap(vec2 p) { return p - floor((p+50.0)/100.0)*100.0; }
+uint cell(vec2 p) {
+    uvec2 xy = uvec2(floor((wrap(p)+50.0)*(float(c.counts.y)/100.0))) % c.counts.y;
+    return xy.y*c.counts.y+xy.x;
+}
+float sense(vec2 p, float angle) {
+    uint i = cell(p + vec2(cos(angle), sin(angle))*c.motion.z);
+    return oldTrail[i] + nutrients[i]*c.behavior.w;
+}
+float deposited(uint i) { return oldTrail[i]+float(deposits[i])/4096.0; }
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    uint cells = c.counts.y*c.counts.y;
+    if (c.counts.z == 0) {
+        if (i < cells) deposits[i] = 0;
+    } else if (c.counts.z == 1) {
+        if (i >= c.counts.x) return;
+        Agent a = oldAgents[i];
+        float angle = a.heading;
+        float f = sense(a.position.xz, angle);
+        float l = sense(a.position.xz, angle+c.motion.w);
+        float r = sense(a.position.xz, angle-c.motion.w);
+        float noise = float(hash(a.id ^ c.random.x ^ (c.counts.w*0x9e3779b9u)) >> 8)/16777216.0*2.0-1.0;
+        float turn = 0;
+        if (f < l && f < r) turn = noise < 0 ? -1.0 : 1.0;
+        else if (!(f > l && f > r)) turn = l > r ? 1.0 : r > l ? -1.0 : 0.0;
+        angle += (turn*c.behavior.x+noise*c.behavior.y)*c.motion.x;
+        angle -= floor((angle+PI)/(2*PI))*(2*PI);
+        a.heading = angle;
+        a.velocity = vec3(cos(angle)*c.motion.y, 0, sin(angle)*c.motion.y);
+        a.position = vec3(wrap(a.position.xz+a.velocity.xz*c.motion.x).x, 0,
+                          wrap(a.position.xz+a.velocity.xz*c.motion.x).y);
+        newAgents[i] = a;
+        // MaxAgents * round(100 * (1/60) * 4096) < 2^32, even in one cell.
+        atomicAdd(deposits[cell(a.position.xz)], uint(c.behavior.z));
+    } else if (c.counts.z == 2) {
+        if (i >= cells) return;
+        ivec2 xy = ivec2(i % c.counts.y, i / c.counts.y);
+        float sum = 0;
+        for (int z=-1; z<=1; ++z) for (int x=-1; x<=1; ++x) {
+            uvec2 n = uvec2(xy+ivec2(x,z)+ivec2(c.counts.y)) % c.counts.y;
+            sum += deposited(n.y*c.counts.y+n.x);
+        }
+        newTrail[i] = min(1000.0, (deposited(i)*(1-c.field.x)+(sum/9)*c.field.x)*c.field.y);
+    } else if (c.counts.z == 3) {
+        if (i < cells) {
+            Agent a;
+            float width = 100.0/float(c.counts.y);
+            a.position = vec3((float(i%c.counts.y)+0.5)*width-50, 0,
+                              (float(i/c.counts.y)+0.5)*width-50);
+            a.size = width; a.velocity = vec3(0); a.heading = 0; a.id = i;
+            float t = 1-exp(-oldTrail[i]*c.field.z);
+            a.color = min(vec3(1), vec3(0.012,0.018,0.028)+vec3(0.75,0.90,0.45)*t+
+                vec3(0.10,0.045,0.005)*nutrients[i]);
+            display[i] = a;
+        } else if (c.field.w != 0 && i-cells < c.counts.x) {
+            Agent a = oldAgents[i-cells]; a.position.y = 0.1; display[i] = a;
+        }
+    }
+}

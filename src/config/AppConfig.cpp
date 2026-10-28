@@ -40,13 +40,15 @@ struct Field {
 std::vector<Field> fields(Settings& settings) {
     auto& b = settings.boids;
     auto& a = settings.ants;
+    auto& a3d = settings.ants3d;
     auto& life = settings.particleLife;
+    auto& slime = settings.slimeMold;
     auto& v = settings.view;
     auto& c = settings.camera;
     auto& p = settings.preview;
     constexpr float pi = 3.14159265358979323846F;
     std::vector<Field> result{
-        {"app.scenario", &settings.scenario, 0.0F, 0.0F, "boids|ants|particle_life"},
+        {"app.scenario", &settings.scenario, 0.0F, 0.0F, "boids|ants|particle_life|ants3d|slime_mold"},
         {"scenarios.boids.count", &b.count, 0.0F, 100000.0F},
         {"scenarios.boids.backend", &b.gpu, 0.0F, 0.0F, "cpu|gpu"},
         {"scenarios.boids.paused", &b.paused},
@@ -81,6 +83,16 @@ std::vector<Field> fields(Settings& settings) {
         {"scenarios.ants.show_food_pheromone", &a.showFoodPheromone},
         {"scenarios.ants.agent_size", &a.agentSize, 0.1F, 1.5F},
         {"scenarios.ants.food_spawn_interval", &a.foodSpawnInterval, 1.0F, 120.0F},
+        {"scenarios.ants3d.count", &a3d.count, 0.0F, 3000.0F},
+        {"scenarios.ants3d.seed", &a3d.seed, 0.0F, static_cast<float>(std::numeric_limits<int>::max())},
+        {"scenarios.ants3d.paused", &a3d.paused},
+        {"scenarios.ants3d.movement_speed", &a3d.movementSpeed, 0.5F, 20.0F},
+        {"scenarios.ants3d.nest_exit_count", &a3d.nestExitCount, 1.0F, 4.0F},
+        {"scenarios.ants3d.nest_entry_count", &a3d.nestEntryCount, 1.0F, 4.0F},
+        {"scenarios.ants3d.food_spawn_interval", &a3d.foodSpawnInterval, 1.0F, 120.0F},
+        {"scenarios.ants3d.show_colliders", &a3d.showColliders},
+        {"scenarios.ants3d.show_cave_roofs", &a3d.showCaveRoofs},
+        {"scenarios.ants3d.show_trails", &a3d.showTrails},
         {"scenarios.particle_life.count", &life.count, 0.0F, 10000.0F},
         {"scenarios.particle_life.backend", &life.gpu, 0.0F, 0.0F, "cpu|gpu"},
         {"scenarios.particle_life.dimensions", &life.threeDimensional, 0.0F, 0.0F, "2d|3d"},
@@ -95,6 +107,23 @@ std::vector<Field> fields(Settings& settings) {
         {"scenarios.particle_life.max_speed", &life.maxSpeed, 1.0F, 100.0F},
         {"scenarios.particle_life.agent_size", &life.agentSize, 0.1F, 1.5F},
         {"scenarios.particle_life.custom_matrix", &life.customMatrix},
+        {"scenarios.slime_mold.count", &slime.count, 0, 100000},
+        {"scenarios.slime_mold.seed", &slime.seed, 0, static_cast<float>(std::numeric_limits<int>::max())},
+        {"scenarios.slime_mold.food_count", &slime.foodCount, 0, 12},
+        {"scenarios.slime_mold.backend", &slime.gpu, 0, 0, "cpu|gpu"},
+        {"scenarios.slime_mold.paused", &slime.paused},
+        {"scenarios.slime_mold.speed", &slime.speed, 0, 30},
+        {"scenarios.slime_mold.sensor_distance", &slime.sensorDistance, 0.1F, 15},
+        {"scenarios.slime_mold.sensor_angle", &slime.sensorAngle, 0.01F, pi},
+        {"scenarios.slime_mold.turn_speed", &slime.turnSpeed, 0, 60},
+        {"scenarios.slime_mold.wander", &slime.wander, 0, 10},
+        {"scenarios.slime_mold.deposit_rate", &slime.depositRate, 0, 100},
+        {"scenarios.slime_mold.diffusion", &slime.diffusion, 0, 60},
+        {"scenarios.slime_mold.evaporation", &slime.evaporation, 0, 10},
+        {"scenarios.slime_mold.food_attraction", &slime.foodAttraction, 0, 100},
+        {"scenarios.slime_mold.exposure", &slime.exposure, 0.001F, 10},
+        {"scenarios.slime_mold.show_agents", &slime.showAgents},
+        {"scenarios.slime_mold.show_food", &slime.showFood},
         {"view.fullscreen", &v.fullscreen},
         {"view.panel_visible", &v.panelVisible},
         {"view.antialiasing", &v.antialiasing},

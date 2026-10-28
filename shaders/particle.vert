@@ -29,7 +29,8 @@ void main() {
     dotMode = int(view.options.y + 0.5);
     shadedDot = int(view.options.z + 0.5);
     localPosition = dotMode != 0 ? quad[gl_VertexIndex] : arrow[gl_VertexIndex];
-    vec2 offset = dotMode == 1 ? localPosition * 0.5 :
+    // Mode 3 draws unrotated square field cells, without circular clipping.
+    vec2 offset = (dotMode == 1 || dotMode == 3) ? localPosition * 0.5 :
                   side * localPosition.x + forward * localPosition.y;
     vec3 position = p.position + (view.right.xyz * offset.x + view.up.xyz * offset.y)
                     * max(p.size, 0.0) * view.options.x;

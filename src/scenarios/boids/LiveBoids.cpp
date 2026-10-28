@@ -3,8 +3,14 @@
 #include "scenarios/boids/BoidsConfig.h"
 #include "scenarios/ants/AntScene.h"
 #include "scenarios/ants/AntPresentation.h"
+#include "scenarios/ants3d/Ant3DScene.h"
+#include "scenarios/ants3d/Ant3DInteraction.h"
+#include "scenarios/ants3d/Ant3DPresentation.h"
+#include "core/MeshRenderer.h"
 #include "scenarios/particle_life/ParticleLifeScene.h"
 #include "scenarios/particle_life/ParticleLifePresentation.h"
+#include "scenarios/slime_mold/SlimeMoldScene.h"
+#include "scenarios/slime_mold/SlimeMoldPresentation.h"
 #include "config/AppConfig.h"
 #include "scenarios/boids/BoidsGpu.h"
 #include "scenarios/boids/CursorAttract.h"
@@ -40,6 +46,8 @@ const char* sceneWindowTitle(int scenario) {
     switch (scenario) {
     case 1: return EMERGENCES_WINDOW_TITLE_PREFIX "Ant Colony";
     case 2: return EMERGENCES_WINDOW_TITLE_PREFIX "Particle Life";
+    case 3: return EMERGENCES_WINDOW_TITLE_PREFIX "Ant Colony 3D";
+    case 4: return EMERGENCES_WINDOW_TITLE_PREFIX "Slime Mold";
     default: return EMERGENCES_WINDOW_TITLE_PREFIX "Boids";
     }
 }
@@ -47,7 +55,14 @@ const char* sceneWindowTitle(int scenario) {
 struct Controls {
     int scenario = 0;
     config::AntSettings ants;
+    config::Ant3DSettings ants3d;
+    ants3d::Ant3DInteraction ant3dInteraction;
+    int antScenario = 1;
+    std::optional<core::Camera::State> ants2dCamera;
+    std::optional<core::Camera::State> ants3dCamera;
     config::ParticleLifeSettings particleLife;
+    config::SlimeMoldSettings slimeMold;
+    std::string slimeMoldBackendError;
     bool preferGpu = true;
     bool panelVisible = true;
     int shape = 0;
@@ -75,6 +90,33 @@ struct Actions {
     bool skipElapsed = false;
 };
 
+// Scene and Dimensions share one transition path. The two colonies retain
+// their own simulation objects and camera poses while the UI groups them together.
+bool selectScenario(Controls& controls, core::Camera& camera, int scenario,
+                    bool particleLife3d) {
+    if (scenario == controls.scenario) return false;
+    if (controls.scenario == 1) controls.ants2dCamera = camera.state();
+    if (controls.scenario == 3) {
+        controls.ant3dInteraction.stopFollowing(camera);
+        controls.ants3dCamera = camera.state();
+    }
+    controls.scenario = scenario;
+    if (scenario == 1 || scenario == 3) {
+        controls.antScenario = scenario;
+        const auto& saved = scenario == 1 ? controls.ants2dCamera : controls.ants3dCamera;
+        if (saved) camera.setState(*saved);
+        else if (scenario == 1) ants::resetAntCamera(camera);
+        else ants3d::resetAnt3DCamera(camera);
+    } else if (scenario == 4) {
+        slime_mold::resetSlimeMoldCamera(camera);
+    } else if (scenario == 2) {
+        particle_life::resetParticleLifeCamera(camera, particleLife3d);
+    } else {
+        camera.reset();
+    }
+    return true;
+}
+
 // Clamp text entry as well as dragging, and keep nonfinite text out of the model.
 bool slider(const char* label, float& value, float minimum, float maximum) {
     const float old = value;
@@ -84,8 +126,9 @@ bool slider(const char* label, float& value, float minimum, float maximum) {
     return value != old;
 }
 
-Actions drawPanel(BoidsScene& scene, ants::AntScene& antScene,
-                  particle_life::ParticleLifeScene& particleLifeScene, Controls& controls, core::Camera& camera,
+Actions drawPanel(BoidsScene& scene, ants::AntScene& antScene, ants3d::Ant3DScene& ant3dScene,
+                  particle_life::ParticleLifeScene& particleLifeScene, slime_mold::SlimeMoldScene& slimeMoldScene,
+                  Controls& controls, core::Camera& camera,
                   const core::Context& context, const core::FrameRenderer& renderer,
                   bool& fullscreen, const config::ConfigFile* config) {
     Actions actions;
@@ -95,18 +138,27 @@ Actions drawPanel(BoidsScene& scene, ants::AntScene& antScene,
     ImGui::Begin("Emergences", nullptr, ImGuiWindowFlags_NoResize);
     ImGui::TextColored(ImVec4(0.3F, 0.8F, 0.95F, 1.0F), "%s",
         controls.scenario == 1 ? "ANT COLONY / LIVE ECOSYSTEM" :
-        controls.scenario == 2 ? "PARTICLE LIFE / EMERGENT SYSTEMS" : "LIVE BOIDS");
+        controls.scenario == 2 ? "PARTICLE LIFE / EMERGENT SYSTEMS" :
+        controls.scenario == 3 ? "ANT COLONY / 3D TERRAIN" :
+        controls.scenario == 4 ? "SLIME MOLD / LIVING NETWORKS" : "LIVE BOIDS");
     ImGui::Checkbox("Fullscreen (F11)", &fullscreen);
     ImGui::SameLine();
     ImGui::TextDisabled("F1: hide panel");
-    if (ImGui::Combo("Scene", &controls.scenario, "Boids\0Ant Colony\0Particle Life\0")) {
-        actions.skipElapsed = true;
-        if (controls.scenario == 1) ants::resetAntCamera(camera);
-        else if (controls.scenario == 2)
-            particle_life::resetParticleLifeCamera(camera, particleLifeScene.threeDimensional());
-        else camera.reset();
+    int selectedScene = controls.scenario == 3 ? 1 : controls.scenario == 4 ? 3 : controls.scenario;
+    if (ImGui::Combo("Scene", &selectedScene, "Boids\0Ant Colony\0Particle Life\0Slime Mold\0")) {
+        actions.skipElapsed |= selectScenario(controls, camera,
+            selectedScene == 1 ? controls.antScenario : selectedScene == 3 ? 4 : selectedScene,
+            particleLifeScene.threeDimensional());
     }
-    if (controls.scenario == 1 || controls.scenario == 2) {
+    if (controls.scenario == 1 || controls.scenario == 3) {
+        int dimensions = controls.scenario == 3 ? 1 : 0;
+        if (ImGui::Combo("Dimensions", &dimensions, "2D plane\0" "3D terrain\0")) {
+            actions.skipElapsed |= selectScenario(controls, camera,
+                dimensions == 1 ? 3 : 1, particleLifeScene.threeDimensional());
+        }
+        ImGui::TextDisabled("Each dimension keeps its colony and camera.");
+    }
+    if (controls.scenario != 0) {
         if (config) {
             if (!config->lastError().empty()) ImGui::TextWrapped("Settings: %s", config->lastError().c_str());
             if (!config->warnings().empty() && ImGui::TreeNode("Settings warnings")) {
@@ -120,6 +172,21 @@ Actions drawPanel(BoidsScene& scene, ants::AntScene& antScene,
             actions.reset = panel.reset;
             actions.step = panel.step;
             actions.skipElapsed |= panel.skipElapsed;
+        } else if (controls.scenario == 3) {
+            const auto panel = ants3d::drawAnt3DControls(ant3dScene, controls.ants3d, camera, renderer,
+                controls.antialiasing, controls.ant3dInteraction.selectedAnt(),
+                controls.ant3dInteraction.following(), controls.ant3dInteraction.followView());
+            if (panel.cameraChanged) controls.ant3dInteraction.stopFollowing(camera, false);
+            if (panel.reset || panel.worldReset) controls.ant3dInteraction.clear(camera, !panel.cameraChanged);
+            actions.reset = panel.reset;
+            actions.step = panel.step;
+            actions.skipElapsed |= panel.skipElapsed;
+        } else if (controls.scenario == 4) {
+            const auto panel = slime_mold::drawSlimeMoldControls(slimeMoldScene, controls.slimeMold,
+                camera, controls.antialiasing, controls.slimeMoldBackendError);
+            actions.reset = panel.reset;
+            actions.step = panel.step;
+            actions.skipElapsed |= panel.skipElapsed;
         } else {
             const auto panel = particle_life::drawParticleLifeControls(particleLifeScene,
                 controls.particleLife, camera, renderer, controls.antialiasing, controls.grid, controls.bounds,
@@ -129,11 +196,19 @@ Actions drawPanel(BoidsScene& scene, ants::AntScene& antScene,
             actions.skipElapsed |= panel.skipElapsed;
         }
         ImGui::Separator();
-        ImGui::TextDisabled("Left drag: orbit | Middle drag: pan");
-        ImGui::TextDisabled("Wheel: zoom | Escape: close");
+        ImGui::TextDisabled(controls.scenario == 3 ?
+            "Left/right drag: look | Middle: pan" : "Left drag: orbit | Middle drag: pan");
+        if (controls.scenario == 3) {
+            ImGui::TextDisabled("WASD: move");
+            ImGui::TextDisabled("Q/E: down/up | Shift: faster");
+        }
+        ImGui::TextDisabled(controls.scenario == 3 && controls.ant3dInteraction.following() ?
+            "Space / Escape: stop follow | F2: view" : "Wheel: zoom | Escape: close");
         ImGui::Text("%.1f FPS | simulation %.2f ms (%zu steps)", static_cast<double>(ImGui::GetIO().Framerate),
             static_cast<double>(controls.simulationMs), controls.simulationSteps);
-        const bool paused = controls.scenario == 1 ? antScene.paused() : particleLifeScene.paused();
+        const bool paused = controls.scenario == 1 ? antScene.paused() :
+            controls.scenario == 3 ? ant3dScene.paused() :
+            controls.scenario == 4 ? slimeMoldScene.paused() : particleLifeScene.paused();
         if (controls.simulationLimited && !paused)
             ImGui::TextColored(ImVec4(1, 0.75F, 0.35F, 1), "Simulation slowed to keep controls responsive.");
         else ImGui::TextDisabled("Inactive scenes keep their state.");
@@ -505,10 +580,11 @@ void checkedParticleLifeDimensions(particle_life::ParticleLifeScene& scene, bool
 
 int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, bool gpuSmokeTest,
                   config::ConfigFile* config, bool startAnts, bool antsSmokeTest,
-                  bool startParticleLife, bool particleLifeSmokeTest, bool startParticleLife3d) {
-    const bool anySmokeTest = smokeTest || gpuSmokeTest || antsSmokeTest || particleLifeSmokeTest;
+                  bool startParticleLife, bool particleLifeSmokeTest, bool startParticleLife3d,
+                  bool startAnts3d, bool ants3dSmokeTest, bool startSlimeMold, bool slimeMoldSmokeTest) {
+    const bool anySmokeTest = smokeTest || gpuSmokeTest || antsSmokeTest || particleLifeSmokeTest || ants3dSmokeTest || slimeMoldSmokeTest;
     if (anySmokeTest) config = nullptr;
-    int titledScenario = startParticleLife || particleLifeSmokeTest || startParticleLife3d ? 2 :
+    int titledScenario = startSlimeMold || slimeMoldSmokeTest ? 4 : startAnts3d || ants3dSmokeTest ? 3 : startParticleLife || particleLifeSmokeTest || startParticleLife3d ? 2 :
         startAnts || antsSmokeTest ? 1 : config ? config->settings().scenario : 0;
     core::Window window{1280, 800, sceneWindowTitle(titledScenario)};
     if (config) window.setFullscreen(config->settings().view.fullscreen);
@@ -527,6 +603,8 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
     bool observedAttract = false;
     bool observedGpuMotion = false;
     bool observedAntMotion = false;
+    bool observedAnt3dMotion = false;
+    std::uint64_t inactiveAnt3dSteps = 0;
     bool observedAntTrail = false;
     bool observedFoodTrail = false;
     bool observedSceneSwitch = false;
@@ -537,8 +615,14 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
     bool observedParticleLife3dWrap = false;
     bool observedParticleLife2dReturn = false;
     std::uint64_t inactiveParticleLifeSteps = 0;
+    std::uint64_t inactiveSlimeMoldSteps = 0;
+    bool observedSlimeMoldTrail = false;
+    bool observedSlimeMoldMotion = false;
     {
         core::VulkanComputeDevice compute{context};
+        core::MeshRenderer ant3dMeshes{context, shaderDirectory};
+        core::MeshRenderer ant3dTerrain{context, shaderDirectory};
+        core::MeshRenderer ant3dColliders{context, shaderDirectory, VK_PRIMITIVE_TOPOLOGY_LINE_LIST};
         core::ParticleRenderer particles{context, shaderDirectory};
         core::ParticleRenderer environmentParticles{context, shaderDirectory};
         core::LineRenderer lines{context, shaderDirectory};
@@ -553,13 +637,19 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
         core::Camera camera;
         BoidsScene scene;
         ants::AntScene antScene;
+        ants3d::Ant3DScene ant3dScene;
         particle_life::ParticleLifeScene particleLifeScene;
+        slime_mold::SlimeMoldScene slimeMoldScene;
         Controls controls;
         if (config) {
             const auto& settings = config->settings();
             controls.scenario = settings.scenario;
             controls.ants = settings.ants;
+            controls.ants3d = settings.ants3d;
+            ants3d::applyAnt3DSettings(ant3dScene, settings.ants3d);
             ants::applyAntSettings(antScene, settings.ants);
+            controls.slimeMold = settings.slimeMold;
+            slime_mold::applySlimeMoldSettings(slimeMoldScene, settings.slimeMold);
             controls.particleLife = settings.particleLife;
             particle_life::applyParticleLifeSettings(particleLifeScene, settings.particleLife);
             applyBoidsSettings(scene, settings.boids);
@@ -579,6 +669,10 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
             const auto& savedCamera = settings.camera;
             camera.setState({{savedCamera.targetX, savedCamera.targetY, savedCamera.targetZ},
                              savedCamera.yaw, savedCamera.pitch, savedCamera.distance});
+        }
+        if (startAnts3d || ants3dSmokeTest) {
+            if (controls.scenario != 3 || !config) ants3d::resetAnt3DCamera(camera);
+            controls.scenario = 3;
         }
         if (startAnts || antsSmokeTest) {
             if (controls.scenario != 1 || !config) ants::resetAntCamera(camera);
@@ -600,6 +694,12 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
                 particle_life::resetParticleLifeCamera(camera, particleLifeScene.threeDimensional());
             controls.scenario = 2;
         }
+        if (startSlimeMold || slimeMoldSmokeTest) {
+            if (controls.scenario != 4 || !config) slime_mold::resetSlimeMoldCamera(camera);
+            controls.scenario = 4;
+        }
+        if (controls.scenario == 1 || controls.scenario == 3)
+            controls.antScenario = controls.scenario;
         try {
             scene.initializeGpu(compute, (shaderDirectory / "compute/boids.comp.spv").string());
             // Keep the preference when GPU initialization fails, so a temporary
@@ -619,6 +719,13 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
         }
         if (particleLifeSmokeTest) require(particleLifeScene.backend() == sim::Backend::GPU,
             "Particle Life must prefer GPU when available");
+        try {
+            slimeMoldScene.initializeGpu(compute, (shaderDirectory / "compute/slime_mold.comp.spv").string());
+            if (controls.slimeMold.gpu) slimeMoldScene.setBackend(sim::Backend::GPU);
+        } catch (const std::exception& error) {
+            if (slimeMoldSmokeTest) throw;
+            controls.slimeMoldBackendError = std::string{"GPU compute unavailable: "} + error.what();
+        }
         auto repelOwner = std::make_unique<CursorRepel>();
         auto attractOwner = std::make_unique<CursorAttract>();
         auto& repel = *repelOwner;
@@ -632,8 +739,12 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
             settings.scenario = controls.scenario;
             ants::captureAntSettings(antScene, controls.ants);
             settings.ants = controls.ants;
+            ants3d::captureAnt3DSettings(ant3dScene, controls.ants3d);
+            settings.ants3d = controls.ants3d;
             particle_life::captureParticleLifeSettings(particleLifeScene, controls.particleLife);
             settings.particleLife = controls.particleLife;
+            slime_mold::captureSlimeMoldSettings(slimeMoldScene, controls.slimeMold);
+            settings.slimeMold = controls.slimeMold;
             captureBoidsSettings(scene, settings.boids);
             settings.boids.gpu = controls.preferGpu;
             settings.boids.cursor = controls.cursor;
@@ -649,7 +760,8 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
             settings.view.grid = controls.grid;
             settings.view.bounds = controls.bounds;
             settings.view.antialiasing = controls.antialiasing;
-            const auto state = camera.state();
+            const auto state = controls.scenario == 3 ?
+                controls.ant3dInteraction.overviewState(camera) : camera.state();
             settings.camera = {state.target.x, state.target.y, state.target.z,
                                state.yaw, state.pitch, state.distance};
             if (!config->save() && config->lastError() != reportedConfigError) {
@@ -660,10 +772,17 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
         saveSettings();
         std::vector<core::Particle> renderParticles;
         std::vector<core::Particle> antEnvironment;
+        std::vector<core::MeshVertex> ant3dGeometry;
+        std::vector<core::MeshVertex> ant3dTerrainGeometry;
+        std::optional<std::uint64_t> ant3dTerrainRevision;
+        std::vector<core::MeshVertex> ant3dCollisionGeometry;
         auto previous = std::chrono::steady_clock::now();
         auto nextSettingsSave = previous + std::chrono::seconds{1};
         const auto deadline = previous + std::chrono::seconds{55};
+        bool ant3dClickArmed = false;
+        ImVec2 ant3dClickStart{};
         while (!window.shouldClose()) {
+            window.setEscapeClosesWindow(!controls.ant3dInteraction.following());
             window.pollEvents();
             if (window.shouldClose()) break;
             const auto now = std::chrono::steady_clock::now();
@@ -675,6 +794,9 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
             bool fullscreen = window.isFullscreen();
             const bool presented = renderer.drawFrame(
                 [&](VkRenderPass pass, std::uint32_t imageCount) {
+                    ant3dMeshes.configure(pass, renderer.sampleCount());
+                    ant3dTerrain.configure(pass, renderer.sampleCount());
+                    ant3dColliders.configure(pass, renderer.sampleCount());
                     particles.configure(pass, renderer.sampleCount());
                     environmentParticles.configure(pass, renderer.sampleCount());
                     lines.configure(pass, renderer.sampleCount());
@@ -706,6 +828,45 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
                     Actions actions;
                     if (smokeTest) smokeSettings(presentedFrames, scene, controls, camera, actions);
                     if (gpuSmokeTest) gpuSmokeSettings(presentedFrames, scene, controls, actions);
+                    if (slimeMoldSmokeTest) {
+                        if (presentedFrames == 1) slimeMoldScene.setCount(0);
+                        if (presentedFrames == 2) slimeMoldScene.setCount(1);
+                        if (presentedFrames == 3) slimeMoldScene.setCount(257);
+                        if (presentedFrames == 4) slimeMoldScene.setCount(100000);
+                        if (presentedFrames == 5) slimeMoldScene.setCount(30000);
+                        if (presentedFrames == 6 || presentedFrames == 7 || presentedFrames == 37) {
+                            const auto before = slimeMoldScene.readback();
+                            const auto steps = slimeMoldScene.totalSteps();
+                            slimeMoldScene.setBackend(presentedFrames == 6 ? sim::Backend::CPU : sim::Backend::GPU);
+                            const auto after = slimeMoldScene.readback();
+                            require(before.trail == after.trail && before.agents.size() == after.agents.size() &&
+                                slimeMoldScene.totalSteps() == steps, "Slime mold backend switch lost field or clock");
+                            for (std::size_t i = 0; i < before.agents.size(); ++i)
+                                require(before.agents[i].position == after.agents[i].position &&
+                                    before.agents[i].reserved == after.agents[i].reserved,
+                                    "Slime mold backend switch lost agent state");
+                        }
+                        if (presentedFrames == 8) slimeMoldScene.setPaused(true);
+                        if (presentedFrames == 9) actions.step = true;
+                        if (presentedFrames == 10) slimeMoldScene.setPaused(false);
+                        if (presentedFrames == 12) slimeMoldScene.setSeed(729);
+                        if (presentedFrames == 24) actions.reset = true;
+                        if (presentedFrames == 26) slimeMoldScene.setFoodCount(0);
+                        if (presentedFrames == 28) slimeMoldScene.setFoodCount(8);
+                        controls.slimeMold.showAgents = presentedFrames >= 18 && presentedFrames < 30;
+                        controls.slimeMold.exposure = presentedFrames >= 20 ? 0.8F : 0.4F;
+                        if (presentedFrames == 32) {
+                            inactiveSlimeMoldSteps = slimeMoldScene.totalSteps();
+                            selectScenario(controls, camera, 2, false);
+                            particleLifeScene.setPaused(true);
+                        }
+                        if (presentedFrames == 36) {
+                            require(slimeMoldScene.totalSteps() == inactiveSlimeMoldSteps,
+                                "Inactive slime mold advanced");
+                            selectScenario(controls, camera, 4, false);
+                            observedSceneSwitch = true;
+                        }
+                    }
                     if (particleLifeSmokeTest) {
                         if (presentedFrames == 1) particleLifeScene.setCount(0);
                         if (presentedFrames == 2) particleLifeScene.setCount(1);
@@ -785,6 +946,98 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
                         }
                         if (presentedFrames == 37) checkedParticleLifeSwitch(particleLifeScene, sim::Backend::GPU);
                     }
+                    if (ants3dSmokeTest) {
+                        if (presentedFrames == 1) ant3dScene.setCount(0);
+                        if (presentedFrames == 2) ant3dScene.setCount(1);
+                        if (presentedFrames == 3) ant3dScene.setCount(257);
+                        if (presentedFrames == 4) ant3dScene.setCount(600);
+                        if (presentedFrames == 5) {
+                            const auto position = ant3dScene.agents().front().position;
+                            const auto picked = ants3d::pickAnt3D(ant3dScene,
+                                {position + glm::vec3{0, 2, 0}, {0, -1, 0}}, controls.ants3d.showCaveRoofs);
+                            require(picked == 0, "The departing ant must be selectable in the rendered scene");
+                            controls.ant3dInteraction.select(picked, ant3dScene, camera);
+                            require(controls.ant3dInteraction.toggleFollow(ant3dScene, camera),
+                                "The selected ant must enter first-person view");
+                        }
+                        if (presentedFrames == 6) {
+                            const auto overview = controls.ant3dInteraction.overviewState(camera);
+                            controls.ant3dInteraction.toggleFollow(ant3dScene, camera);
+                            const auto restored = camera.state();
+                            require(!controls.ant3dInteraction.following() && restored.target == overview.target &&
+                                restored.yaw == overview.yaw && restored.pitch == overview.pitch &&
+                                restored.distance == overview.distance,
+                                "Leaving first-person must restore the rendered scene camera");
+                            const auto eyeBeforeLook = camera.position();
+                            camera.look(35.0F, -15.0F);
+                            require(glm::length(camera.position() - eyeBeforeLook) < 1.0e-4F,
+                                "3D ant free look must rotate around the camera position");
+                            camera.zoom(0.5F);
+                        }
+                        if (presentedFrames == 7) {
+                            controls.ant3dInteraction.toggleFollowView(ant3dScene, camera);
+                            require(controls.ant3dInteraction.toggleFollow(ant3dScene, camera),
+                                "The selected ant must enter third-person follow");
+                        }
+                        if (presentedFrames == 8) ant3dScene.setPaused(true);
+                        if (presentedFrames == 9) actions.step = true;
+                        if (presentedFrames == 10) ant3dScene.setPaused(false);
+                        if (presentedFrames == 11) {
+                            controls.ant3dInteraction.stopFollowing(camera);
+                            controls.ant3dInteraction.toggleFollowView(ant3dScene, camera);
+                        }
+                        if (presentedFrames == 12) { ant3dScene.randomize(729U); actions.skipElapsed = true; }
+                        if (presentedFrames == 24) actions.reset = true;
+                        if (presentedFrames == 26) {
+                            ant3dScene.setMovementSpeed(9.4F);
+                            ant3dScene.setNestExitCount(2);
+                            ant3dScene.setNestEntryCount(3);
+                            ant3dScene.setFoodSpawnInterval(1.0F);
+                        }
+                        if (presentedFrames == 30) {
+                            controls.ant3dInteraction.clear(camera);
+                            for (int step = 0; step < 120 && !ant3dScene.latestExitedAnt(); ++step)
+                                ant3dScene.advance(ants3d::Ant3DScene::FixedStepSeconds);
+                            require(controls.ant3dInteraction.toggleFollow(ant3dScene, camera) &&
+                                controls.ant3dInteraction.selectedAnt() == ant3dScene.latestExitedAnt(),
+                                "Space without selection must follow the latest completed departure");
+                        }
+                        if (presentedFrames == 31)
+                            controls.ant3dInteraction.toggleFollowView(ant3dScene, camera);
+                        controls.ants3d.showColliders = presentedFrames >= 26 && presentedFrames < 30;
+                        controls.ants3d.showCaveRoofs = presentedFrames < 28 || presentedFrames >= 38;
+                        if (presentedFrames == 32) {
+                            inactiveAnt3dSteps = ant3dScene.totalSteps();
+                            actions.skipElapsed |= selectScenario(controls, camera, 1,
+                                particleLifeScene.threeDimensional());
+                            require(controls.antScenario == 1, "2D dimension selection was not remembered");
+                        }
+                        if (presentedFrames == 36) {
+                            require(ant3dScene.totalSteps() == inactiveAnt3dSteps,
+                                "Inactive 3D ants advanced while showing 2D ants");
+                            inactiveAntSteps = antScene.totalSteps();
+                            require(inactiveAntSteps > 0, "2D ants did not retain an independent simulation");
+                            actions.skipElapsed |= selectScenario(controls, camera, 3,
+                                particleLifeScene.threeDimensional());
+                            const auto restored = camera.state();
+                            const auto saved = *controls.ants3dCamera;
+                            require(controls.antScenario == 3 && restored.target == saved.target &&
+                                restored.yaw == saved.yaw && restored.pitch == saved.pitch &&
+                                restored.distance == saved.distance,
+                                "Switching ant dimensions must restore the 3D camera");
+                            require(ant3dScene.count() == 600 && antScene.count() == 1500 &&
+                                ant3dScene.seed() == 729U && antScene.seed() == 12345U,
+                                "Switching ant dimensions changed independent colony settings");
+                            observedSceneSwitch = true;
+                        }
+                        if (presentedFrames == 38) {
+                            // Returning through Scene uses the same remembered dimension as the UI.
+                            selectScenario(controls, camera, 2, particleLifeScene.threeDimensional());
+                            actions.skipElapsed |= selectScenario(controls, camera, controls.antScenario,
+                                particleLifeScene.threeDimensional());
+                            require(controls.scenario == 3, "Scene menu lost the selected ant dimension");
+                        }
+                    }
                     if (antsSmokeTest) {
                         if (presentedFrames == 1) antScene.setCount(0);
                         if (presentedFrames == 2) antScene.setCount(1);
@@ -819,8 +1072,9 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
                         controls.ants.showHomePheromone = presentedFrames < 26 || presentedFrames >= 30;
                         controls.ants.showFoodPheromone = presentedFrames < 28 || presentedFrames >= 30;
                     }
+                    if (controls.scenario == 3) controls.ant3dInteraction.update(ant3dScene, camera);
                     if (controls.panelVisible) {
-                        const auto panelActions = drawPanel(scene, antScene, particleLifeScene,
+                        const auto panelActions = drawPanel(scene, antScene, ant3dScene, particleLifeScene, slimeMoldScene,
                             controls, camera, context, renderer, fullscreen, config);
                         actions.reset |= panelActions.reset;
                         actions.step |= panelActions.step;
@@ -837,13 +1091,215 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
                     // Capture is computed before this frame's windows are drawn.
                     const bool mouseCaptured = panelJustShown || (controls.panelVisible && ui.wantsMouse());
                     const bool cameraInput = ImGui::IsMouseDown(ImGuiMouseButton_Left) ||
-                        ImGui::IsMouseDown(ImGuiMouseButton_Middle) || ui.wheelDelta() != 0.0F;
-                    if (!mouseCaptured && !anySmokeTest) {
-                        if (ImGui::IsMouseDragging(ImGuiMouseButton_Left)) camera.orbit(io.MouseDelta.x, io.MouseDelta.y);
+                        ImGui::IsMouseDown(ImGuiMouseButton_Middle) || ui.wheelDelta() != 0.0F ||
+                        (controls.scenario == 3 && ImGui::IsMouseDown(ImGuiMouseButton_Right));
+                    const bool ant3dFollowing = controls.scenario == 3 && controls.ant3dInteraction.following();
+                    const bool cameraFocused = controls.scenario != 3 ||
+                        glfwGetWindowAttrib(window.nativeHandle(), GLFW_FOCUSED);
+                    if (!mouseCaptured && !anySmokeTest && !ant3dFollowing && cameraFocused) {
+                        const bool freeLook = controls.scenario == 3 &&
+                            (ImGui::IsMouseDragging(ImGuiMouseButton_Left) ||
+                             ImGui::IsMouseDragging(ImGuiMouseButton_Right));
+                        if (freeLook) camera.look(io.MouseDelta.x, io.MouseDelta.y);
+                        else if (ImGui::IsMouseDragging(ImGuiMouseButton_Left)) camera.orbit(io.MouseDelta.x, io.MouseDelta.y);
                         if (ImGui::IsMouseDragging(ImGuiMouseButton_Middle)) camera.pan(io.MouseDelta.x, io.MouseDelta.y, io.DisplaySize.y);
                         camera.zoom(ui.wheelDelta());
                     }
+                    const bool ant3dKeyboardAllowed = controls.scenario == 3 && !anySmokeTest && !panelJustShown &&
+                        glfwGetWindowAttrib(window.nativeHandle(), GLFW_FOCUSED) &&
+                        !io.WantCaptureKeyboard && !io.WantTextInput && !ImGui::IsAnyItemActive();
+                    if (ant3dKeyboardAllowed) {
+                        if (ImGui::IsKeyPressed(ImGuiKey_F2, false))
+                            controls.ant3dInteraction.toggleFollowView(ant3dScene, camera);
+                        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+                            controls.ant3dInteraction.stopFollowing(camera);
+                        else if (ImGui::IsKeyPressed(ImGuiKey_Space, false))
+                            controls.ant3dInteraction.toggleFollow(ant3dScene, camera);
+                    }
+                    if (ant3dKeyboardAllowed && !controls.ant3dInteraction.following()) {
+                        glm::vec3 direction{
+                            static_cast<float>(ImGui::IsKeyDown(ImGuiKey_D)) - static_cast<float>(ImGui::IsKeyDown(ImGuiKey_A)),
+                            static_cast<float>(ImGui::IsKeyDown(ImGuiKey_E)) - static_cast<float>(ImGui::IsKeyDown(ImGuiKey_Q)),
+                            static_cast<float>(ImGui::IsKeyDown(ImGuiKey_W)) - static_cast<float>(ImGui::IsKeyDown(ImGuiKey_S))};
+                        if (glm::dot(direction, direction) > 0.0F) {
+                            // Normalize diagonals; a stalled frame must not teleport across the map.
+                            const float distance = 28.0F * (io.KeyShift ? 3.0F : 1.0F) *
+                                static_cast<float>(std::clamp(elapsed, 0.0, 0.1));
+                            direction = glm::normalize(direction) * distance;
+                            camera.move(direction.x, direction.y, direction.z);
+                        }
+                    }
                     const float aspect = static_cast<float>(extent.width) / static_cast<float>(extent.height);
+                    // A selection is a press/release on the scene. Dragging to
+                    // rotate the camera, crossing UI, or losing focus cancels the candidate.
+                    const bool pickAllowed = controls.scenario == 3 && !anySmokeTest && !mouseCaptured &&
+                        !ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow) && ImGui::IsMousePosValid() &&
+                        glfwGetWindowAttrib(window.nativeHandle(), GLFW_HOVERED) &&
+                        glfwGetWindowAttrib(window.nativeHandle(), GLFW_FOCUSED);
+                    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                        ant3dClickArmed = pickAllowed;
+                        ant3dClickStart = io.MousePos;
+                    }
+                    const float clickDx = io.MousePos.x - ant3dClickStart.x;
+                    const float clickDy = io.MousePos.y - ant3dClickStart.y;
+                    if (!pickAllowed || clickDx * clickDx + clickDy * clickDy >
+                        io.MouseDragThreshold * io.MouseDragThreshold ||
+                        ImGui::IsMouseDragging(ImGuiMouseButton_Left) ||
+                        ImGui::IsMouseDown(ImGuiMouseButton_Middle) ||
+                        ImGui::IsMouseDown(ImGuiMouseButton_Right) || ui.wheelDelta() != 0.0F)
+                        ant3dClickArmed = false;
+                    if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+                        if (ant3dClickArmed && io.DisplaySize.x > 0.0F && io.DisplaySize.y > 0.0F) {
+                            const auto ray = camera.screenRay(io.MousePos.x / io.DisplaySize.x,
+                                io.MousePos.y / io.DisplaySize.y, aspect);
+                            if (ray) {
+                                const auto picked = ants3d::pickAnt3D(ant3dScene, *ray,
+                                    controls.ants3d.showCaveRoofs, controls.ant3dInteraction.firstPersonFollowing() ?
+                                        controls.ant3dInteraction.selectedAnt() : std::nullopt);
+                                controls.ant3dInteraction.select(picked, ant3dScene, camera);
+                            }
+                        }
+                        ant3dClickArmed = false;
+                    }
+                    if (controls.scenario == 3) {
+                        repel.setEnabled(false);
+                        attract.setEnabled(false);
+                        const auto stepsBefore = ant3dScene.totalSteps();
+                        const auto firstPosition = ant3dScene.agents().empty() ? glm::vec3{0} :
+                            ant3dScene.agents().front().position;
+                        const auto started = std::chrono::steady_clock::now();
+                        controls.simulationSteps = 0;
+                        controls.simulationLimited = false;
+                        if (actions.reset) ant3dScene.reset();
+                        else {
+                            if (actions.step && ant3dScene.singleStep()) ++controls.simulationSteps;
+                            if (!actions.skipElapsed) {
+                                const double budget = ants3dSmokeTest ? (presentedFrames >= 40 ? 0.0 :
+                                    std::numeric_limits<double>::infinity()) : 0.008;
+                                controls.simulationSteps += ant3dScene.advance(
+                                    ants3dSmokeTest ? 1.0 / 60.0 : elapsed, budget);
+                                controls.simulationLimited = ant3dScene.lastAdvanceLimited();
+                            }
+                        }
+                        controls.simulationMs = std::chrono::duration<float, std::milli>(
+                            std::chrono::steady_clock::now() - started).count();
+                        // Terrain depends only on the world seed and roof view.
+                        // Keep the large immutable mesh out of per-frame CPU
+                        // generation and upload each revision once per GPU slot.
+                        const std::uint64_t terrainRevision =
+                            (static_cast<std::uint64_t>(ant3dScene.seed()) << 1U) |
+                            static_cast<std::uint64_t>(controls.ants3d.showCaveRoofs);
+                        if (ant3dTerrainRevision != terrainRevision) {
+                            ants3d::makeAnt3DTerrainMesh(ant3dScene, controls.ants3d, ant3dTerrainGeometry);
+                            ant3dTerrainRevision = terrainRevision;
+                        }
+                        controls.ant3dInteraction.update(ant3dScene, camera,
+                            ants3dSmokeTest ? 1.0 / 60.0 : elapsed);
+                        const auto followedAnt = controls.ant3dInteraction.firstPersonFollowing() ?
+                            controls.ant3dInteraction.selectedAnt() : std::nullopt;
+                        ants3d::makeAnt3DMesh(ant3dScene, controls.ants3d, ant3dGeometry,
+                            controls.ant3dInteraction.selectedAnt(), followedAnt);
+                        if (controls.ants3d.showColliders)
+                            ants3d::makeAnt3DColliders(ant3dScene, ant3dCollisionGeometry, followedAnt);
+                        if (ants3dSmokeTest) {
+                            require(!ant3dTerrainGeometry.empty() && !ant3dScene.terrain().caves().empty(),
+                                "3D ants must render solid terrain and caves");
+                            if (presentedFrames == 5) require(followedAnt == 0 &&
+                                glm::length(camera.position() - ant3dScene.agents().front().position) < 0.3F,
+                                "The rendered first-person camera must move with the selected ant");
+                            if (presentedFrames == 7 || presentedFrames == 31) {
+                                require(controls.ant3dInteraction.following() && !followedAnt &&
+                                    controls.ant3dInteraction.followView() == ants3d::FollowView::ThirdPerson,
+                                    "Third-person follow must render the selected ant's body");
+                                require(glm::length(camera.position() - ant3dScene.agents()[
+                                    *controls.ant3dInteraction.selectedAnt()].position) > 0.3F,
+                                    "The third-person camera must trail outside the selected ant");
+                            }
+                            if (ant3dScene.paused() && !actions.step && !actions.reset)
+                                require(ant3dScene.totalSteps() == stepsBefore, "Paused 3D ants advanced");
+                            if (actions.step) require(ant3dScene.totalSteps() == stepsBefore + 1,
+                                "3D ant single step failed");
+                            if (actions.reset) require(ant3dScene.totalSteps() == 0, "3D ant reset failed");
+                            if (presentedFrames >= 40) require(controls.simulationSteps == 1 && controls.simulationLimited,
+                                "3D ant frame budget failed");
+                            if (!ant3dScene.agents().empty() && !actions.reset && ant3dScene.totalSteps() > stepsBefore)
+                                observedAnt3dMotion |= ant3dScene.agents().front().position != firstPosition;
+                            require(scene.totalSteps() == 0 && particleLifeScene.totalSteps() == 0 &&
+                                antScene.totalSteps() == inactiveAntSteps,
+                                "3D ant simulation advanced another scene");
+                        }
+                        core::SceneView view;
+                        view.viewProjection = camera.viewProjection(aspect);
+                        view.right = glm::vec4(camera.right(), 0);
+                        view.up = glm::vec4(camera.up(), 0);
+                        ui.endFrame();
+                        ant3dTerrain.draw(commands, frame, ant3dTerrainGeometry, view, terrainRevision);
+                        ant3dMeshes.draw(commands, frame, ant3dGeometry, view);
+                        if (controls.ants3d.showColliders)
+                            ant3dColliders.draw(commands, frame, ant3dCollisionGeometry, view);
+                        ui.record(commands);
+                        return;
+                    }
+                    if (controls.scenario == 4) {
+                        repel.setEnabled(false); attract.setEnabled(false);
+                        const auto stepsBefore = slimeMoldScene.totalSteps();
+                        const auto before = slimeMoldSmokeTest ? slimeMoldScene.readback() : slime_mold::SlimeMoldState{};
+                        const auto started = std::chrono::steady_clock::now();
+                        controls.simulationSteps = 0; controls.simulationLimited = false;
+                        if (actions.reset) slimeMoldScene.reset();
+                        else {
+                            if (actions.step && slimeMoldScene.singleStep()) ++controls.simulationSteps;
+                            if (!actions.skipElapsed) {
+                                const double budget = slimeMoldSmokeTest ? (presentedFrames >= 40 ? 0.0 :
+                                    std::numeric_limits<double>::infinity()) : 0.008;
+                                controls.simulationSteps += slimeMoldScene.advance(
+                                    slimeMoldSmokeTest ? 1.0 / 30.0 : elapsed, budget);
+                                controls.simulationLimited = slimeMoldScene.lastAdvanceLimited();
+                            }
+                        }
+                        const auto display = slimeMoldScene.refreshDisplay(controls.slimeMold.exposure,
+                            controls.slimeMold.showAgents);
+                        controls.simulationMs = std::chrono::duration<float, std::milli>(
+                            std::chrono::steady_clock::now() - started).count();
+                        renderParticles.resize(display.size());
+                        for (std::size_t i = 0; i < display.size(); ++i) {
+                            const auto& a = display[i];
+                            renderParticles[i] = {a.position, a.size, a.velocity, 0, a.color, a.id};
+                        }
+                        slime_mold::makeSlimeMoldFood(slimeMoldScene, controls.slimeMold.showFood, antEnvironment);
+                        if (slimeMoldSmokeTest) {
+                            const auto state = slimeMoldScene.readback();
+                            if (slimeMoldScene.paused() && !actions.step && !actions.reset)
+                                require(slimeMoldScene.totalSteps() == stepsBefore, "Paused slime mold advanced");
+                            if (actions.step) require(slimeMoldScene.totalSteps() == stepsBefore+1, "Slime mold step failed");
+                            if (actions.reset) require(slimeMoldScene.totalSteps() == 0, "Slime mold reset failed");
+                            if (presentedFrames >= 40) require(controls.simulationSteps == 1 && controls.simulationLimited,
+                                "Slime mold work budget failed");
+                            if (!state.agents.empty() && !actions.reset && slimeMoldScene.totalSteps() > stepsBefore)
+                                observedSlimeMoldMotion |= state.agents.front().position != before.agents.front().position;
+                            observedSlimeMoldTrail |= std::any_of(state.trail.begin(), state.trail.end(),
+                                [](float t) { return t > 0; });
+                            if (slimeMoldScene.backend() == sim::Backend::GPU)
+                                require(display.empty() && slimeMoldScene.agents().empty() && slimeMoldScene.trail().empty(),
+                                    "GPU slime mold must render without CPU state copies");
+                        }
+                        core::SceneView view;
+                        view.viewProjection = camera.viewProjection(aspect);
+                        view.right = {1,0,0,0}; view.up = {0,0,1,0};
+                        view.options = {1,3,0,0};
+                        ui.endFrame();
+                        if (slimeMoldSmokeTest && !controls.panelVisible)
+                            require(ImGui::GetDrawData()->TotalVtxCount == 0, "Hidden slime mold panel left draw commands");
+                        if (slimeMoldScene.backend() == sim::Backend::GPU) {
+                            const auto buffer = slimeMoldScene.renderBuffer();
+                            particles.drawBuffer(commands, frame, compute.buffer(buffer), compute.bufferSize(buffer),
+                                static_cast<std::uint32_t>(slimeMoldScene.renderCount(controls.slimeMold.showAgents)), view);
+                        } else particles.draw(commands, frame, renderParticles, view);
+                        view.options.y = 1;
+                        environmentParticles.draw(commands, frame, antEnvironment, view);
+                        ui.record(commands);
+                        return;
+                    }
                     if (controls.scenario == 2) {
                         repel.setEnabled(false);
                         attract.setEnabled(false);
@@ -949,7 +1405,7 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
                             if (!actions.skipElapsed) {
                                 const double budget = antsSmokeTest ? (presentedFrames >= 40 ? 0.0 :
                                     std::numeric_limits<double>::infinity()) : 0.008;
-                                controls.simulationSteps += antScene.advance(antsSmokeTest ? 1.0 / 60.0 : elapsed, budget);
+                                controls.simulationSteps += antScene.advance((antsSmokeTest || ants3dSmokeTest) ? 1.0 / 60.0 : elapsed, budget);
                                 controls.simulationLimited = antScene.lastAdvanceLimited();
                             }
                         }
@@ -1170,6 +1626,22 @@ int BoidsApp::run(const std::filesystem::path& shaderDirectory, bool smokeTest, 
         std::cout << "Ant smoke test passed: " << presentedFrames << " frames, " << generations
             << " swapchain generations, food/hostiles/trails/terrain, 0/24/48 obstacles, 0/1/257/1500 ants, pause/step/reset/seed, "
                "scene switches/budget/MSAA/fullscreen/F1 panel, 0 validation errors.\n";
+    }
+    if (ants3dSmokeTest) {
+        require(presentedFrames >= 48 && generations >= 3 && observedAnt3dMotion && observedSceneSwitch,
+            "3D ant smoke test closed before all checks completed");
+        std::cout << "3D ant smoke test passed: " << presentedFrames << " frames, " << generations
+            << " swapchain generations, solid terrain/caves/ants/colliders/cutaway, "
+               "0/1/257/600 ants, pause/step/reset/seed, independent 2D/3D dimensions/cameras, "
+               "first/third-person follow/latest departure/multiple nest gates, "
+               "camera-centered free look/budget/MSAA/fullscreen/F1 panel, 0 validation errors.\n";
+    }
+    if (slimeMoldSmokeTest) {
+        require(presentedFrames >= 48 && generations >= 3 && observedSlimeMoldMotion &&
+            observedSlimeMoldTrail && observedSceneSwitch, "Slime mold smoke test incomplete");
+        std::cout << "Slime mold smoke test passed: 48 frames, GPU field/agents/direct rendering, "
+                     "CPU/GPU transfers, 0/1/257/30000/100000 agents, pause/step/reset/food/seed, "
+                     "scene switches/budget/MSAA/fullscreen/F1, 0 validation errors.\n";
     }
     if (particleLifeSmokeTest) {
         require(presentedFrames >= 48 && generations >= 3 && observedParticleLifeMotion &&

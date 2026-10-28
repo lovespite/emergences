@@ -160,6 +160,44 @@ void Camera::pan(float deltaX, float deltaY, float viewportHeight) {
     }
 }
 
+void Camera::look(float deltaX, float deltaY) {
+    if (!finiteDeltas(deltaX, deltaY) || (deltaX == 0.0F && deltaY == 0.0F)) {
+        return;
+    }
+    const glm::vec3 eye = position();
+    const float previousYaw = yaw_;
+    const float previousPitch = pitch_;
+    orbit(deltaX, deltaY);
+    const glm::vec3 offset = distance_ * glm::vec3{
+        std::cos(pitch_) * std::sin(yaw_), std::sin(pitch_),
+        std::cos(pitch_) * std::cos(yaw_)};
+    const glm::vec3 target = eye - offset;
+    // At the world-coordinate limit, reject the look instead of clamping the
+    // target and unexpectedly moving the eye. Normal exploration is unaffected.
+    for (glm::length_t axis = 0; axis < 3; ++axis) {
+        if (std::abs(static_cast<double>(target[axis])) > maximumTargetCoordinate) {
+            yaw_ = previousYaw;
+            pitch_ = previousPitch;
+            return;
+        }
+    }
+    target_ = target;
+}
+
+void Camera::move(float rightDistance, float upDistance, float forwardDistance) {
+    if (!finiteDeltas(rightDistance, forwardDistance) || !std::isfinite(upDistance)) {
+        return;
+    }
+    const glm::dvec3 forward{-std::sin(yaw_), 0.0, -std::cos(yaw_)};
+    const glm::dvec3 offset = static_cast<double>(rightDistance) * glm::dvec3(right()) +
+        glm::dvec3{0.0, upDistance, 0.0} + static_cast<double>(forwardDistance) * forward;
+    for (glm::length_t axis = 0; axis < 3; ++axis) {
+        target_[axis] = static_cast<float>(std::clamp(
+            static_cast<double>(target_[axis]) + offset[axis],
+            -maximumTargetCoordinate, maximumTargetCoordinate));
+    }
+}
+
 void Camera::zoom(float wheelDelta) {
     if (!std::isfinite(wheelDelta)) {
         return;

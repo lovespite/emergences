@@ -11,12 +11,14 @@
 # 缺少某项时使用代码默认值；下文分别列出默认值与可修改的示例值。
 # 本示例的 min_speed=8、max_speed=14、fullscreen=on 有意不同于默认值。
 # 距离使用模拟世界单位，时间使用模拟秒；Boids 世界三轴范围均为 [-40, 40]。
-# 蚁群在 y=0 的 XZ 平面上活动，X、Z 范围同为 [-80, 80]。
+# 2D 蚁群在 y=0 的 XZ 平面上活动，X、Z 范围同为 [-80, 80]；3D 蚁群使用独立地形。
 
 # ── 启动场景 ────────────────────────────────────────────────────────
 
-# 正常启动时选中的场景。可选 boids（默认）、ants（蚁群）或 particle_life（粒子生命）。
-# 运行中可以在控制面板切换；每个场景的参数独立保存，显示选项和相机共用。
+# 正常启动时选中的场景。可选 boids（默认）、ants（2D 蚁群）、particle_life（粒子生命）、ants3d（3D 蚁群）、slime_mold（黏菌网络）。
+# Scene 菜单提供 Boids / Ant Colony / Particle Life / Slime Mold；蚁群通过 Dimensions 切换 2D plane / 3D terrain。
+# 每种模拟的参数独立保存；本次运行中，蚁群两种维度分别保留相机，返回 Ant Colony 恢复最近使用的维度。
+# 配置中的 view.camera.* 保存当前视角；app.scenario = ants / ants3d 分别直接恢复 2D / 3D 蚁群入口。
 # --render-preview 仍进入程序化预览，不受此选项影响。
 app.scenario = boids
 
@@ -179,6 +181,46 @@ scenarios.ants.show_food_pheromone = on
 
 # 蚂蚁的显示尺寸缩放系数。范围 0.1..1.5，默认 0.5；不改变感知和移动行为。
 scenarios.ants.agent_size = 0.5
+
+# ── 独立 3D 蚁群场景：地形、碰撞与显示 ──────────────────────────────
+# 通过 --ants-3d 或 Scene → Ant Colony → Dimensions → 3D terrain 进入，具有山丘、洞穴与蚂蚁碰撞体积。
+# 地图覆盖 [-128, 128]²（256×256），采用种子驱动的多层 Perlin 噪声生成地形起伏与山脊。
+# 以下参数独立于 scenarios.ants.*，不会改变原有 2D 蚁群的数量、种子或暂停状态。
+# 在 Dimensions 中切换不会重建模拟；未显示的一侧停止推进，切回后继续。
+
+# 蚂蚁数量。整数范围 0..3000，默认 600；0 保留地形以便观察。
+scenarios.ants3d.count = 600
+
+# 世界随机种子。整数范围 0..2147483647，默认 12345。
+# 同时决定地形、洞室与通道、河流与桥梁、水坑、蚁巢、初始蚂蚁与食物。
+# 相同种子和参数可复现初始世界；河流始终生成可通行的桥梁。
+# 面板 Generate from seed / Random map 重建地图；Reset 按当前种子重放。
+# 保存种子与参数，不保存当前个体位置、轨迹或搬运进度。
+scenarios.ants3d.seed = 12345
+
+# 是否暂停 3D 蚁群模拟。on/off，默认 off。
+scenarios.ants3d.paused = off
+
+# 蚂蚁移动速度。范围 0.5..20，默认 4.7，单位为世界距离/模拟秒。
+scenarios.ants3d.movement_speed = 4.7
+
+# 蚁巢出口数量。整数范围 1..4，默认 1。
+scenarios.ants3d.nest_exit_count = 1
+
+# 蚁巢入口数量。整数范围 1..4，默认 1。
+scenarios.ants3d.nest_entry_count = 1
+
+# 食物生成间隔。范围 1..120，默认 10，单位为模拟秒；暂停时停止计时。
+scenarios.ants3d.food_spawn_interval = 10
+
+# 是否显示碰撞体积。on/off，默认 off；隐藏时物理碰撞仍然生效。
+scenarios.ants3d.show_colliders = off
+
+# 是否显示洞穴顶部。on/off，默认 on；关闭可观察洞穴内部的活动。
+scenarios.ants3d.show_cave_roofs = on
+
+# 是否显示蚂蚁活动轨迹。on/off，默认 on。
+scenarios.ants3d.show_trails = on
 
 # ── Particle Life 场景：种类与运行状态 ──────────────────────────────
 # 2D 在水平 XZ 平面活动；3D 在立方体内活动，所有活动坐标范围均为 [-50, 50)。
@@ -405,3 +447,42 @@ scenarios.preview.color = direction
 # 预览粒子的显示尺寸缩放系数。范围 0.15..1.8，默认 0.65。
 # 与 view.agent_size 一样按世界空间缩放图形，仅作用于预览，不修改 Boids 显示尺寸。
 scenarios.preview.agent_size = 0.65
+
+# ── 黏菌网络（Slime Mold）────────────────────────────────────────────
+# 100×100 的 XZ 周期世界，256×256 轨迹网格；默认 GPU 计算，固定步长 1/60 秒。
+# 三探针感知→转向移动→沉积→扩散衰减。营养源为持续吸引点，不被消耗。
+# 修改数量、种子或营养源数量会重建整个世界并清空轨迹；后端切换保留个体和轨迹。
+# 个体数量：0..100000，默认 30000；0 时已有轨迹仍继续扩散衰减。
+scenarios.slime_mold.count = 30000
+# 后端：gpu（默认）/cpu。GPU 初始化失败时回退 CPU，保留 GPU 偏好。
+scenarios.slime_mold.backend = gpu
+# 种子：0..2147483647，默认 12345；重置可复现同一后端的初始状态。
+scenarios.slime_mold.seed = 12345
+# 营养源数量：0..12，默认 5；0 表示无营养源的自由网络。
+scenarios.slime_mold.food_count = 5
+# 暂停：on/off，默认 off；暂停时可单步。
+scenarios.slime_mold.paused = off
+# 速度：0..30 世界单位/秒，默认 8。
+scenarios.slime_mold.speed = 8
+# 探针距离：0.1..15 世界单位，默认 2.5。
+scenarios.slime_mold.sensor_distance = 2.5
+# 左右探针与前进方向夹角：0.01..π 弧度，默认 0.65。
+scenarios.slime_mold.sensor_angle = 0.65
+# 转向速率：0..60 弧度/秒，默认 12。
+scenarios.slime_mold.turn_speed = 12
+# 随机游走：0..10 弧度/秒，默认 0.5。
+scenarios.slime_mold.wander = 0.5
+# 单个体沉积速率：0..100/秒，默认 8；固定点分辨率 1/4096，每格浓度上限 1000。
+scenarios.slime_mold.deposit_rate = 8
+# 九点均值扩散速率：0..60/秒，默认 18；每步混合系数为 diffusion/60。
+scenarios.slime_mold.diffusion = 18
+# 指数衰减速率：0..10/秒，默认 0.35；0 为不衰减。
+scenarios.slime_mold.evaporation = 0.35
+# 营养场感知权重：0..100，默认 6；0 关闭营养引导，轨迹感知仍生效。
+scenarios.slime_mold.food_attraction = 6
+# 轨迹亮度：0.001..10，默认 0.4；仅影响显示，不改变模拟。
+scenarios.slime_mold.exposure = 0.4
+# 叠加显示移动个体：on/off，默认 off；轨迹本身始终显示。
+scenarios.slime_mold.show_agents = off
+# 显示营养源标记：on/off，默认 on；隐藏标记不会关闭营养引导。
+scenarios.slime_mold.show_food = on

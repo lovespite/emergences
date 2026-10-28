@@ -1,0 +1,43 @@
+add_library(emergences_ants3d STATIC Ant3DScene.cpp Ant3DInteraction.cpp Terrain.cpp WaterTerrain.cpp TerrainNavigation.cpp)
+add_library(emergences::ants3d ALIAS emergences_ants3d)
+target_link_libraries(emergences_ants3d PUBLIC emergences::sim)
+emergences_target_defaults(emergences_ants3d)
+
+if(BUILD_TESTING)
+    set(header_check "${CMAKE_CURRENT_BINARY_DIR}/header_checks/Ant3DScene.cpp")
+    file(GENERATE OUTPUT "${header_check}" CONTENT "#include \"scenarios/ants3d/Ant3DScene.h\"\n")
+    add_library(emergences_ants3d_header_check OBJECT "${header_check}")
+    target_link_libraries(emergences_ants3d_header_check PRIVATE emergences::ants3d)
+    emergences_target_defaults(emergences_ants3d_header_check)
+
+    set(interaction_header_check "${CMAKE_CURRENT_BINARY_DIR}/header_checks/Ant3DInteraction.cpp")
+    file(GENERATE OUTPUT "${interaction_header_check}" CONTENT "#include \"scenarios/ants3d/Ant3DInteraction.h\"\n")
+    target_sources(emergences_ants3d_header_check PRIVATE "${interaction_header_check}")
+
+    add_executable(emergences_ants3d_interaction_tests tests/Ant3DInteractionTests.cpp ../../core/Camera.cpp)
+    target_link_libraries(emergences_ants3d_interaction_tests PRIVATE emergences::ants3d)
+    emergences_target_defaults(emergences_ants3d_interaction_tests)
+    add_test(NAME ants3d_interaction COMMAND emergences_ants3d_interaction_tests)
+    set_tests_properties(ants3d_interaction PROPERTIES LABELS "cpu;ants3d;interaction" TIMEOUT 60)
+
+    if(EMERGENCES_BUILD_APP)
+        add_executable(emergences_ants3d_presentation_tests tests/Ant3DPresentationTests.cpp Ant3DPresentation.cpp)
+        target_link_libraries(emergences_ants3d_presentation_tests PRIVATE
+            emergences::core emergences::ants3d emergences::imgui emergences::config)
+        emergences_target_defaults(emergences_ants3d_presentation_tests)
+        add_test(NAME ants3d_presentation COMMAND emergences_ants3d_presentation_tests)
+        set_tests_properties(ants3d_presentation PROPERTIES LABELS "cpu;ants3d;presentation" TIMEOUT 60)
+    endif()
+
+    add_executable(emergences_ants3d_scene_tests tests/Ant3DSceneTests.cpp)
+    target_link_libraries(emergences_ants3d_scene_tests PRIVATE emergences::ants3d)
+    emergences_target_defaults(emergences_ants3d_scene_tests)
+    add_test(NAME ants3d_scene COMMAND emergences_ants3d_scene_tests)
+    set_tests_properties(ants3d_scene PROPERTIES LABELS "cpu;sim;ants3d" TIMEOUT 180)
+
+    add_executable(emergences_ants3d_terrain_tests tests/TerrainTests.cpp)
+    target_link_libraries(emergences_ants3d_terrain_tests PRIVATE emergences::ants3d)
+    emergences_target_defaults(emergences_ants3d_terrain_tests)
+    add_test(NAME ants3d_terrain COMMAND emergences_ants3d_terrain_tests)
+    set_tests_properties(ants3d_terrain PROPERTIES LABELS "cpu;sim;ants3d" TIMEOUT 30)
+endif()

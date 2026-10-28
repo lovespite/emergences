@@ -7,7 +7,7 @@
 
 namespace emergences::core {
 
-// Orbit camera with a right-handed world and a Vulkan [0, 1] depth projection.
+// Orbit/free camera with a right-handed world and a Vulkan [0, 1] depth projection.
 // Drag deltas and viewportHeight must use the same units (usually window pixels).
 class Camera final {
 public:
@@ -46,6 +46,11 @@ public:
 
     void orbit(float deltaX, float deltaY);
     void pan(float deltaX, float deltaY, float viewportHeight);
+    // Rotate the view in place. Positive deltas look right/down, preserving the eye.
+    void look(float deltaX, float deltaY);
+    // Translate eye and target together. Right/forward follow the horizontal
+    // heading; up follows world Y. Distances use world units.
+    void move(float rightDistance, float upDistance, float forwardDistance);
     // Positive wheel deltas move toward the target.
     void zoom(float wheelDelta);
     // Fits the [-40, 40] world box in a square or landscape viewport.

@@ -74,6 +74,17 @@ void missingFileCreatesDefaults(const std::filesystem::path& directory) {
             "Existing users must retain Boids while new ant settings receive defaults");
     require(text.find("view.fullscreen = off\n") != std::string::npos,
             "Booleans must use on/off");
+    require(text.find("scenarios.ants3d.count = 600\n") != std::string::npos &&
+                text.find("scenarios.ants3d.seed = 12345\n") != std::string::npos &&
+                text.find("scenarios.ants3d.paused = off\n") != std::string::npos &&
+                text.find("scenarios.ants3d.movement_speed = 4.7\n") != std::string::npos &&
+                text.find("scenarios.ants3d.nest_exit_count = 1\n") != std::string::npos &&
+                text.find("scenarios.ants3d.nest_entry_count = 1\n") != std::string::npos &&
+                text.find("scenarios.ants3d.food_spawn_interval = 10\n") != std::string::npos &&
+                text.find("scenarios.ants3d.show_colliders = off\n") != std::string::npos &&
+                text.find("scenarios.ants3d.show_cave_roofs = on\n") != std::string::npos &&
+                text.find("scenarios.ants3d.show_trails = on\n") != std::string::npos,
+            "3D ant settings must receive independent defaults");
     require(text.find("scenarios.particle_life.count = 2000\n") != std::string::npos &&
                 text.find("scenarios.particle_life.backend = gpu\n") != std::string::npos &&
                 text.find("scenarios.particle_life.dimensions = 2d\n") != std::string::npos &&
@@ -408,7 +419,7 @@ void antSettingsValidation(const std::filesystem::path& directory) {
     settings.ants.seed = -1;
     require(!config.save() && read(path) == saved, "Invalid runtime ant seeds must not replace the file");
     settings.ants.seed = 0;
-    settings.scenario = 3;
+    settings.scenario = 5;
     require(!config.save() && read(path) == saved, "Unknown runtime scenes must not replace the file");
     settings.scenario = 1;
     for (const auto invalid : {-1, 49}) {
@@ -437,6 +448,157 @@ void antSettingsValidation(const std::filesystem::path& directory) {
         require(boundary.settings() == settings && boundary.warnings().empty(),
                 "Both obstacle count limits must round trip without warnings");
     }
+}
+
+void ant3DSettingsRoundTripAndValidation(const std::filesystem::path& directory) {
+    const auto path = directory / "ants-3d.cfg";
+    write(path, "# Existing 2D ant settings\n"
+                "app.scenario = ants\n"
+                "scenarios.ants.count = 1700\n"
+                "scenarios.ants.seed = 42\n"
+                "scenarios.ants.paused = on\n");
+    ConfigFile config(path);
+    require(config.warnings().empty() && config.settings().scenario == 1 &&
+                config.settings().ants3d == Settings{}.ants3d &&
+                !config.hasValue("scenarios.ants3d.count"),
+            "Existing 2D ant configurations must retain their scene and independent 3D defaults");
+    const auto originalAnts = config.settings().ants;
+    config.settings().scenario = 3;
+    config.settings().ants3d = {3000, std::numeric_limits<int>::max(), true, true, false, false};
+    config.settings().ants3d.movementSpeed = 8.25F;
+    config.settings().ants3d.nestExitCount = 2;
+    config.settings().ants3d.nestEntryCount = 3;
+    config.settings().ants3d.foodSpawnInterval = 17.5F;
+    require(config.save(), "Independent 3D ant settings must save");
+    auto saved = read(path);
+    require(saved.find("app.scenario = ants3d\n") != std::string::npos &&
+                saved.find("scenarios.ants3d.count = 3000\n") != std::string::npos &&
+                saved.find("scenarios.ants3d.seed = 2147483647\n") != std::string::npos &&
+                saved.find("scenarios.ants3d.movement_speed = 8.25\n") != std::string::npos &&
+                saved.find("scenarios.ants3d.nest_exit_count = 2\n") != std::string::npos &&
+                saved.find("scenarios.ants3d.nest_entry_count = 3\n") != std::string::npos &&
+                saved.find("scenarios.ants3d.food_spawn_interval = 17.5\n") != std::string::npos &&
+                saved.find("scenarios.ants3d.show_colliders = on\n") != std::string::npos &&
+                saved.find("scenarios.ants3d.show_cave_roofs = off\n") != std::string::npos &&
+                saved.find("scenarios.ants3d.show_trails = off\n") != std::string::npos,
+            "3D ant scene selection and display toggles must save by name");
+    ConfigFile reloaded(path);
+    require(reloaded.settings() == config.settings() && reloaded.warnings().empty() &&
+                reloaded.settings().ants == originalAnts,
+            "Every 3D ant setting must round trip without changing the 2D colony");
+    for (const auto count : {0, 3000}) {
+        config.settings().ants3d.count = count;
+        config.settings().ants3d.seed = 0;
+        require(config.save(), "Both 3D ant count limits and a zero seed must save");
+        ConfigFile boundary(path);
+        require(boundary.settings() == config.settings() && boundary.warnings().empty(),
+                "3D ant boundary values must round trip");
+    }
+    for (const bool maximum : {false, true}) {
+        auto& ants = config.settings().ants3d;
+        ants.movementSpeed = maximum ? 20.0F : 0.5F;
+        ants.nestExitCount = maximum ? 4 : 1;
+        ants.nestEntryCount = maximum ? 4 : 1;
+        ants.foodSpawnInterval = maximum ? 120.0F : 1.0F;
+        require(config.save(), "3D ant movement, portal and food interval limits must save");
+        ConfigFile boundary(path);
+        require(boundary.settings() == config.settings() && boundary.warnings().empty(),
+                "3D ant movement, portal and food interval limits must round trip");
+    }
+    saved = read(path);
+    for (const auto count : {-1, 3001}) {
+        config.settings().ants3d.count = count;
+        require(!config.save() && read(path) == saved,
+                "Invalid runtime 3D ant counts must preserve the saved file");
+    }
+    config.settings().ants3d.count = 600;
+    config.settings().ants3d.seed = -1;
+    require(!config.save() && read(path) == saved,
+            "Invalid runtime 3D ant seeds must preserve the saved file");
+    config.settings().ants3d.seed = 0;
+    for (const auto speed : {0.49F, 20.01F, std::numeric_limits<float>::infinity(),
+                             std::numeric_limits<float>::quiet_NaN()}) {
+        config.settings().ants3d.movementSpeed = speed;
+        require(!config.save() && read(path) == saved,
+                "Invalid runtime 3D ant speeds must preserve the saved file");
+    }
+    config.settings().ants3d.movementSpeed = 4.7F;
+    for (const auto member : {&emergences::config::Ant3DSettings::nestExitCount,
+                              &emergences::config::Ant3DSettings::nestEntryCount}) {
+        for (const auto count : {-1, 0, 5}) {
+            config.settings().ants3d.*member = count;
+            require(!config.save() && read(path) == saved,
+                    "Invalid runtime 3D ant portal counts must preserve the saved file");
+        }
+        config.settings().ants3d.*member = 1;
+    }
+    for (const auto interval : {0.99F, 120.01F, std::numeric_limits<float>::infinity(),
+                                std::numeric_limits<float>::quiet_NaN()}) {
+        config.settings().ants3d.foodSpawnInterval = interval;
+        require(!config.save() && read(path) == saved,
+                "Invalid runtime 3D ant food intervals must preserve the saved file");
+    }
+
+    const std::string invalidEntries[] = {
+        "scenarios.ants3d.count = -1",
+        "scenarios.ants3d.count = 3001",
+        "scenarios.ants3d.count = 3.5",
+        "scenarios.ants3d.seed = -1",
+        "scenarios.ants3d.seed = 2147483648",
+        "scenarios.ants3d.movement_speed = 0.49",
+        "scenarios.ants3d.movement_speed = 20.01",
+        "scenarios.ants3d.movement_speed = nan",
+        "scenarios.ants3d.movement_speed = inf",
+        "scenarios.ants3d.nest_exit_count = -1",
+        "scenarios.ants3d.nest_exit_count = 0",
+        "scenarios.ants3d.nest_exit_count = 5",
+        "scenarios.ants3d.nest_exit_count = 2.5",
+        "scenarios.ants3d.nest_entry_count = -1",
+        "scenarios.ants3d.nest_entry_count = 0",
+        "scenarios.ants3d.nest_entry_count = 5",
+        "scenarios.ants3d.nest_entry_count = 2.5",
+        "scenarios.ants3d.food_spawn_interval = 0.99",
+        "scenarios.ants3d.food_spawn_interval = 120.01",
+        "scenarios.ants3d.food_spawn_interval = nan",
+        "scenarios.ants3d.food_spawn_interval = inf",
+        "scenarios.ants3d.paused = maybe",
+        "scenarios.ants3d.show_colliders = yes",
+        "scenarios.ants3d.show_cave_roofs = maybe",
+        "scenarios.ants3d.show_trails = enabled",
+    };
+    std::string input = "app.scenario = ants3d\nscenarios.ants3d.count = 900\n"
+                        "scenarios.ants3d.movement_speed = 6.25 # travel speed\n"
+                        "scenarios.ants3d.nest_exit_count = 2 # exits\n"
+                        "scenarios.ants3d.nest_entry_count = 3 # entries\n"
+                        "scenarios.ants3d.food_spawn_interval = 18.5 # food timer\n"
+                        "scenarios.ants.count = 1700\n";
+    for (const auto& invalid : invalidEntries) input += invalid + '\n';
+    write(path, input);
+    ConfigFile invalid(path);
+    auto expected = Settings{};
+    expected.scenario = 3;
+    expected.ants.count = 1700;
+    expected.ants3d.count = 900;
+    expected.ants3d.movementSpeed = 6.25F;
+    expected.ants3d.nestExitCount = 2;
+    expected.ants3d.nestEntryCount = 3;
+    expected.ants3d.foodSpawnInterval = 18.5F;
+    require(invalid.settings() == expected && invalid.warnings().size() == std::size(invalidEntries),
+            "Invalid 3D ant values must retain valid values without affecting the 2D colony");
+    invalid.settings().ants3d.movementSpeed = 7.5F;
+    invalid.settings().ants3d.nestExitCount = 4;
+    invalid.settings().ants3d.nestEntryCount = 2;
+    invalid.settings().ants3d.foodSpawnInterval = 30.0F;
+    require(invalid.save(), "Valid 3D ant changes must replace invalid saved values");
+    saved = read(path);
+    require(saved.find("scenarios.ants3d.movement_speed = 7.5 # travel speed\n") != std::string::npos &&
+                saved.find("scenarios.ants3d.nest_exit_count = 4 # exits\n") != std::string::npos &&
+                saved.find("scenarios.ants3d.nest_entry_count = 2 # entries\n") != std::string::npos &&
+                saved.find("scenarios.ants3d.food_spawn_interval = 30 # food timer\n") != std::string::npos,
+            "3D ant movement, portal and food interval saves must preserve inline comments");
+    ConfigFile corrected(path);
+    require(corrected.settings() == invalid.settings() && corrected.warnings().empty(),
+            "Saving 3D ant changes must canonicalize invalid duplicate entries");
 }
 
 void ioFailures(const std::filesystem::path& directory) {
@@ -490,6 +652,41 @@ void ioFailures(const std::filesystem::path& directory) {
 #endif
 }
 
+void slimeMoldRoundTripAndValidation(const std::filesystem::path& directory) {
+    const auto path = directory / "slime-mold.cfg";
+    write(path, "# slime mold settings\napp.scenario = slime_mold\n"
+        "scenarios.slime_mold.count = 100000\nscenarios.slime_mold.backend = cpu\n"
+        "scenarios.slime_mold.seed = 73\nscenarios.slime_mold.food_count = 12\n"
+        "scenarios.slime_mold.sensor_angle = 1.2\nscenarios.slime_mold.exposure = 2.5\n"
+        "scenarios.slime_mold.show_agents = on\nscenarios.slime_mold.show_food = off\n");
+    ConfigFile config(path);
+    require(config.warnings().empty() && config.settings().scenario == 4 &&
+        config.settings().slimeMold.count == 100000 && !config.settings().slimeMold.gpu &&
+        config.settings().slimeMold.seed == 73 && config.settings().slimeMold.foodCount == 12 &&
+        config.settings().slimeMold.sensorAngle == 1.2F && config.settings().slimeMold.exposure == 2.5F &&
+        config.settings().slimeMold.showAgents && !config.settings().slimeMold.showFood,
+        "Slime mold settings failed to load");
+    config.settings().slimeMold.gpu = true;
+    config.settings().slimeMold.diffusion = 60;
+    config.settings().slimeMold.evaporation = 0;
+    config.settings().slimeMold.depositRate = 100;
+    config.settings().slimeMold.foodAttraction = 0;
+    config.settings().slimeMold.paused = true;
+    require(config.save(), "Slime mold settings failed to save");
+    ConfigFile reloaded(path);
+    require(reloaded.settings() == config.settings() && reloaded.warnings().empty(),
+        "Slime mold settings failed to round trip");
+    require(read(path).find("# slime mold settings") != std::string::npos, "Slime mold save lost comments");
+    for (const std::string invalid : {"count = 100001", "food_count = 13", "backend = invalid",
+            "sensor_distance = 0", "diffusion = 61", "evaporation = -1", "exposure = nan",
+            "deposit_rate = inf", "seed = -1"}) {
+        write(path, "scenarios.slime_mold." + invalid + "\n");
+        ConfigFile rejected(path);
+        require(rejected.warnings().size() == 1 && rejected.settings() == Settings{},
+            "Invalid slime mold setting should retain default");
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -500,7 +697,9 @@ int main() {
         invalidValuesKeepPrevious(scratch.path);
         completeRoundTripAndComments(scratch.path);
         particleLifeRoundTripAndValidation(scratch.path);
+        slimeMoldRoundTripAndValidation(scratch.path);
         antSettingsValidation(scratch.path);
+        ant3DSettingsRoundTripAndValidation(scratch.path);
         ioFailures(scratch.path);
         std::cout << "Configuration settings tests passed\n";
         return EXIT_SUCCESS;

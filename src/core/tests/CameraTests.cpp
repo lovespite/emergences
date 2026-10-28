@@ -141,6 +141,53 @@ void panAndReset() {
                 near(camera.up(), initialUp), "Reset must restore framing and orientation");
 }
 
+void freeMovementAndLook() {
+    Camera camera;
+    camera.setState({{4.0F, 5.0F, 6.0F}, 0.0F, 0.0F, 20.0F});
+    const auto original = camera.state();
+    const glm::vec3 initialEye = camera.position();
+    camera.move(2.0F, 3.0F, 4.0F);
+    require(near(camera.position(), initialEye + glm::vec3{2.0F, 3.0F, -4.0F}) &&
+                near(camera.state().target, original.target + glm::vec3{2.0F, 3.0F, -4.0F}),
+            "Free movement must translate both eye and target along the heading");
+    require(camera.state().yaw == original.yaw && camera.state().pitch == original.pitch &&
+                camera.state().distance == original.distance,
+            "Free movement must preserve orientation and zoom distance");
+
+    const glm::vec3 eye = camera.position();
+    camera.look(100.0F, 60.0F);
+    require(near(camera.position(), eye), "Looking around must preserve the eye position");
+    const auto rightDownRay = camera.screenRay(0.5F, 0.5F, 1.0F);
+    require(rightDownRay && rightDownRay->direction.x > 0.0F && rightDownRay->direction.y < 0.0F,
+            "Dragging right/down must look right/down");
+    require(camera.state().distance == original.distance, "Looking around must preserve zoom distance");
+    for (int i = 0; i < 500; ++i) camera.look(i % 2 == 0 ? 2.0F : -2.0F, i % 2 == 0 ? 1.0F : -1.0F);
+    require(near(camera.position(), eye), "Repeated looking must not drift the eye");
+    requireBasis(camera);
+
+    camera.setState({{0.0F, 0.0F, 0.0F}, std::numbers::pi_v<float> / 2.0F, 0.7F, 20.0F});
+    const glm::vec3 turnedEye = camera.position();
+    camera.move(2.0F, 3.0F, 4.0F);
+    require(near(camera.position(), turnedEye + glm::vec3{-4.0F, 3.0F, -2.0F}),
+            "Translation must follow yaw while vertical movement follows world up, regardless of pitch");
+
+    const float huge = std::numeric_limits<float>::max();
+    const glm::vec3 beforeExtremeLook = camera.position();
+    camera.look(huge, huge);
+    require(near(camera.position(), beforeExtremeLook), "Extreme finite look deltas must preserve the eye");
+    requireBasis(camera);
+    camera.move(huge, huge, -huge);
+    requireBasis(camera);
+    const auto atLimit = camera.state();
+    const glm::vec3 eyeAtLimit = camera.position();
+    camera.look(300.0F, -100.0F);
+    require(near(camera.position(), eyeAtLimit, 0.02F), "Looking at movement limits must not displace the eye");
+    const auto afterLook = camera.state();
+    require(std::abs(afterLook.target.x) <= 100000.0F && std::abs(afterLook.target.y) <= 100000.0F &&
+                std::abs(afterLook.target.z) <= 100000.0F && afterLook.distance == atLimit.distance,
+            "Free movement and looking must keep the target within representable world limits");
+}
+
 void invalidAndExtremeInputs() {
     Camera camera;
     const glm::vec3 initialPosition = camera.position();
@@ -148,6 +195,11 @@ void invalidAndExtremeInputs() {
     const float infinity = std::numeric_limits<float>::infinity();
     camera.orbit(nan, 0.0F);
     camera.orbit(0.0F, infinity);
+    camera.look(nan, 0.0F);
+    camera.look(0.0F, infinity);
+    camera.move(nan, 0.0F, 1.0F);
+    camera.move(1.0F, infinity, 0.0F);
+    camera.move(0.0F, 1.0F, -infinity);
     camera.zoom(nan);
     camera.zoom(infinity);
     camera.pan(nan, 1.0F, 600.0F);
@@ -173,6 +225,8 @@ void stateRestoration() {
     original.orbit(125.0F, -42.0F);
     original.pan(-95.0F, 63.0F, 720.0F);
     original.zoom(3.0F);
+    original.move(8.0F, -2.0F, 6.0F);
+    original.look(-45.0F, 27.0F);
     const auto saved = original.state();
     Camera restored;
     restored.setState(saved);
@@ -313,6 +367,7 @@ int main() {
         defaultFraming();
         orbitAndZoom();
         panAndReset();
+        freeMovementAndLook();
         invalidAndExtremeInputs();
         stateRestoration();
         screenRaysAndPicking();

@@ -50,6 +50,20 @@ struct AntSettings {
     bool operator==(const AntSettings&) const = default;
 };
 
+struct Ant3DSettings {
+    int count = 600;
+    int seed = 12345;
+    bool paused = false;
+    bool showColliders = false;
+    bool showCaveRoofs = true;
+    bool showTrails = true;
+    float movementSpeed = 4.7F;
+    int nestExitCount = 1;
+    int nestEntryCount = 1;
+    float foodSpawnInterval = 10.0F;
+    bool operator==(const Ant3DSettings&) const = default;
+};
+
 struct ParticleLifeSettings {
     int count = 2000;
     bool gpu = true;
@@ -69,6 +83,27 @@ struct ParticleLifeSettings {
     // Row = receiving species, column = source species, fixed row stride of 8.
     std::array<float, 64> matrix{};
     bool operator==(const ParticleLifeSettings&) const = default;
+};
+
+struct SlimeMoldSettings {
+    int count = 30000;
+    int seed = 12345;
+    int foodCount = 5;
+    bool gpu = true;
+    bool paused = false;
+    float speed = 8.0F;
+    float sensorDistance = 2.5F;
+    float sensorAngle = 0.65F;
+    float turnSpeed = 12.0F;
+    float wander = 0.5F;
+    float depositRate = 8.0F;
+    float diffusion = 18.0F;
+    float evaporation = 0.35F;
+    float foodAttraction = 6.0F;
+    float exposure = 0.4F;
+    bool showAgents = false;
+    bool showFood = true;
+    bool operator==(const SlimeMoldSettings&) const = default;
 };
 
 struct ViewSettings {
@@ -105,7 +140,9 @@ struct Settings {
     int scenario = 0;
     BoidsSettings boids;
     AntSettings ants;
+    Ant3DSettings ants3d;
     ParticleLifeSettings particleLife;
+    SlimeMoldSettings slimeMold;
     ViewSettings view;
     CameraSettings camera;
     PreviewSettings preview;

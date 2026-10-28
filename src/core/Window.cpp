@@ -125,9 +125,11 @@ void Window::processShortcuts() {
         fullscreenTogglePending_ = false;
         toggleFullscreen();
     }
-    if (glfwGetKey(window_, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
+    const bool escapeDown = glfwGetKey(window_, GLFW_KEY_ESCAPE) == GLFW_PRESS;
+    if (escapeClosesWindow_ && escapeDown && !escapeDown_) {
         glfwSetWindowShouldClose(window_, GLFW_TRUE);
     }
+    escapeDown_ = escapeDown;
 }
 
 bool Window::shouldClose() const { return glfwWindowShouldClose(window_) == GLFW_TRUE; }

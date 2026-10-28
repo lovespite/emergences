@@ -106,9 +106,13 @@ int main(int argc, char** argv) {
     bool gpuSmokeTest = false;
     bool antsSmokeTest = false;
     bool startAnts = false;
+    bool ants3dSmokeTest = false;
+    bool startAnts3d = false;
     bool startParticleLife = false;
     bool startParticleLife3d = false;
     bool particleLifeSmokeTest = false;
+    bool startSlimeMold = false;
+    bool slimeMoldSmokeTest = false;
     bool renderPreview = false;
     bool noConfig = false;
     std::optional<std::filesystem::path> configPath;
@@ -122,9 +126,13 @@ int main(int argc, char** argv) {
                          "  --gpu-smoke-test  Verify GPU Boids rendering and CPU/GPU state transfers.\n"
                          "  --ants-smoke-test  Verify ants, environment, pheromone trails and scene switches.\n"
                          "  --ants        Start the Ant Colony scene (also available in the Scene menu).\n"
+                         "  --ants-3d     Start the independent 3D Ant Colony with hills, caves and collisions.\n"
+                         "  --ants-3d-smoke  Verify 3D ant collisions, terrain rendering and scene switches.\n"
                          "  --particle-life  Start Particle Life with an editable species interaction matrix.\n"
                          "  --particle-life-3d  Start 3D Particle Life with GPU compute and an orbit camera.\n"
                          "  --particle-life-smoke-test  Verify 2D/3D Particle Life, GPU rendering and scene switches.\n"
+                         "  --slime-mold  Start the GPU slime mold network simulation.\n"
+                         "  --slime-mold-smoke-test  Verify slime mold GPU trails, transfers and rendering.\n"
                          "  --render-preview  Show the procedural renderer preview.\n"
                          "  --config PATH  Load and remember settings in this file.\n"
                          "  --no-config   Use defaults without reading or writing settings.\n"
@@ -152,12 +160,20 @@ int main(int argc, char** argv) {
             antsSmokeTest = true;
         } else if (argument == "--ants") {
             startAnts = true;
+        } else if (argument == "--ants-3d") {
+            startAnts3d = true;
+        } else if (argument == "--ants-3d-smoke" || argument == "--ants-3d-smoke-test") {
+            ants3dSmokeTest = true;
         } else if (argument == "--particle-life") {
             startParticleLife = true;
         } else if (argument == "--particle-life-3d") {
             startParticleLife3d = true;
         } else if (argument == "--particle-life-smoke-test") {
             particleLifeSmokeTest = true;
+        } else if (argument == "--slime-mold") {
+            startSlimeMold = true;
+        } else if (argument == "--slime-mold-smoke-test") {
+            slimeMoldSmokeTest = true;
         } else if (argument == "--render-preview") {
             renderPreview = true;
         } else if (argument == "--config") {
@@ -184,8 +200,10 @@ int main(int argc, char** argv) {
     if (static_cast<int>(smokeTest) + static_cast<int>(renderSmokeTest) +
         static_cast<int>(boidsSmokeTest) + static_cast<int>(gpuSmokeTest) + static_cast<int>(renderPreview) +
         static_cast<int>(antsSmokeTest) + static_cast<int>(startAnts) +
+        static_cast<int>(ants3dSmokeTest) + static_cast<int>(startAnts3d) +
         static_cast<int>(startParticleLife) + static_cast<int>(startParticleLife3d) +
-        static_cast<int>(particleLifeSmokeTest) > 1) {
+        static_cast<int>(particleLifeSmokeTest) + static_cast<int>(startSlimeMold) +
+        static_cast<int>(slimeMoldSmokeTest) > 1) {
         std::cerr << "Choose only one application mode.\n";
         return 2;
     }
@@ -193,8 +211,8 @@ int main(int argc, char** argv) {
     try {
         const auto shaders = shaderDirectory();
         std::unique_ptr<emergences::config::ConfigFile> config;
-        if (!(smokeTest || renderSmokeTest || boidsSmokeTest || gpuSmokeTest || antsSmokeTest ||
-              particleLifeSmokeTest || noConfig)) {
+        if (!(smokeTest || renderSmokeTest || boidsSmokeTest || gpuSmokeTest || antsSmokeTest || ants3dSmokeTest ||
+              particleLifeSmokeTest || slimeMoldSmokeTest || noConfig)) {
             config = std::make_unique<emergences::config::ConfigFile>(
                 configPath ? std::filesystem::absolute(*configPath) : shaders.parent_path() / "emergences.conf");
             const auto settingsPath = config->path().u8string();
@@ -206,13 +224,14 @@ int main(int argc, char** argv) {
         if (smokeTest) return app.runTriangle(shaders, true);
         if (renderSmokeTest || renderPreview) return app.runPreview(shaders, renderSmokeTest, config.get());
         return app.run(shaders, boidsSmokeTest, gpuSmokeTest, config.get(), startAnts, antsSmokeTest,
-                       startParticleLife, particleLifeSmokeTest, startParticleLife3d);
+                       startParticleLife, particleLifeSmokeTest, startParticleLife3d,
+                       startAnts3d, ants3dSmokeTest, startSlimeMold, slimeMoldSmokeTest);
     } catch (const std::exception& error) {
         const std::string message = std::string{"Application failed: "} + error.what();
         std::cerr << message << '\n';
 #if defined(_WIN32)
-        if (!std::cerr && !(smokeTest || renderSmokeTest || boidsSmokeTest || gpuSmokeTest || antsSmokeTest ||
-                            particleLifeSmokeTest)) {
+        if (!std::cerr && !(smokeTest || renderSmokeTest || boidsSmokeTest || gpuSmokeTest || antsSmokeTest || ants3dSmokeTest ||
+                            particleLifeSmokeTest || slimeMoldSmokeTest)) {
             MessageBoxA(nullptr, message.c_str(), "emergences", MB_OK | MB_ICONERROR);
         }
 #endif
